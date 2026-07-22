@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Data - never commit 1M rows
+data/raw/
+data/*.csv
+*.parquet
+*.db
+
+# Secrets
+.env
+.env.local
+
+# Databricks
+.databricks/
+_checkpoints/
+_spark_metadata/
+
+# OS
+.DS_Store
+Thumbs.db
