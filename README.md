@@ -6,8 +6,6 @@ An end-to-end data engineering portfolio project simulating a large US supermark
 
 **Business Context:** USA only. 50 stores across 4 US Census regions. 2,500 products, 100k customers.
 
-**Current Status: Milestone 1 Complete - Postgres retail_raw permissive dirty landing (raw_id only, no FK/CHECK) running in WSL2 native Docker | M2 Data Generation (1M rows with 1-2% errors) is next**
-
 ## Architecture
 [Host Win11] -> [WSL2 Ubuntu 24.04: Docker Engine + Postgres 16]
 -> [VMWare Win11 Dev VM: Python, DBeaver, VS Code]
@@ -49,3 +47,25 @@ See docs/03_medallion_flow.md for diagram.
 ## Dashboards Planned
 1. Regional Director: Sales by state/region, store performance, YoY growth map
 2. Product Manager: Category performance, basket analysis, discount impact, out-of-stock simulation
+
+## Milestones
+
+### M1 - Infra & Postgres - DONE
+- WSL2 Docker Postgres 15, permissive table retail_raw with only raw_id PK
+- Docs: 00_setup.md, 01_postgres_infra.md, 02_architecture_decisions.md
+- Repo live on GitHub
+
+### M2 - Data Generation - DONE
+- Generator: 02_data_gen/generate_retail_data.py
+- 1,000,000 rows retail_raw.csv with 2% error injection (nulls, invalid IDs, negatives, future dates)
+- Validated: 1,000,000 rows
+- Docs: 04_data_generation.md
+
+### M3 - Load to Postgres Raw - IN PROGRESS
+- Load 1M CSV to WSL2 Postgres via COPY
+
+### M4 - Databricks Bronze/Silver/Gold - TODO
+### M5 - Data Quality - TODO
+### M6 - Orchestration - TODO
+### M7 - Power BI - TODO
+### M8 - Final Docs - TODO
