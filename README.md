@@ -61,8 +61,12 @@ See docs/03_medallion_flow.md for diagram.
 - Validated: 1,000,000 rows
 - Docs: 04_data_generation.md
 
-### M3 - Load to Postgres Raw - IN PROGRESS
-- Load 1M CSV to WSL2 Postgres via COPY
+### M3 - Load to Postgres (Raw Layer) - DONE
+Raw layer is permissive - it allows NULLs, bad types, and stores ingestion metadata.
+
+### Infrastructure (WSL2 / Host / DEV VM)
+We run Postgres in Docker inside **WSL2 Ubuntu**. DEV VM cannot reach WSL2 directly, so Host acts as router.
+
 
 ### M4 - Databricks Bronze/Silver/Gold - TODO
 ### M5 - Data Quality - TODO
