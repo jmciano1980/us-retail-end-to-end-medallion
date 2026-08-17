@@ -149,7 +149,7 @@ DEV VM PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python 01_infra\load_to_postgres.py
+python 03_raw_layer\load_to_postgres.py
 ```
 
 Expected:

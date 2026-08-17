@@ -1,179 +1,224 @@
-import os, re, csv
+"""
+load_to_postgres.py - FINAL CORRECT VERSION
+4 files -> 5 tables (Bronze raw layer, all TEXT permissive to allow 1% dirty rows)
+
+Inputs (from data/raw or data/samples):
+  stores.csv       -> retail_raw.stores
+  products.csv     -> retail_raw.products
+  customers.csv    -> retail_raw.customers
+  retail_raw.csv   -> retail_raw.invoices + retail_raw.invoice_items (SPLIT)
+
+Structures (REAL, as generated):
+  stores: store_id, store_name, city, state, zip_code, region, manager_name, opened_date, square_footage
+  products: product_id, sku, product_name, category, subcategory, brand, unit_price, cost, is_active
+  customers: customer_id, first_name, last_name, email, phone, street_address, city, state, zip_code, loyalty_tier, join_date
+  retail_raw.csv: invoice_id, store_id, customer_id, invoice_date, payment_method, line_item, product_id, quantity, unit_price, discount
+    -> invoices: invoice_id, store_id, customer_id, invoice_date, payment_method (DISTINCT)
+    -> invoice_items: invoice_id, line_item, product_id, quantity, unit_price, discount
+
+Run:
+  python 03_raw_layer/load_to_postgres.py --truncate
+  python 03_raw_layer/load_to_postgres.py --sample --truncate
+"""
+import os, sys, time
 from pathlib import Path
-from dotenv import load_dotenv
 import psycopg2
-from psycopg2 import extras
+from dotenv import load_dotenv
 
 load_dotenv()
+load_dotenv("01_infra/.env")
+load_dotenv("03_raw_layer/.env")
+load_dotenv(".env")
 
 DB_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": os.getenv("POSTGRES_PORT", "5432"),
+    "host": os.getenv("POSTGRES_HOST", "192.168.182.1"),
+    "port": int(os.getenv("POSTGRES_PORT", "5432")),
     "dbname": os.getenv("POSTGRES_DB", "retail_db"),
     "user": os.getenv("POSTGRES_USER", "retail_admin"),
-    "password": os.getenv("POSTGRES_PASSWORD", "Retail123!"),
-}
-CSV_DIR = Path(os.getenv("CSV_INPUT_DIR", "data/raw"))
-
-# 4 files -> 5 tables. retail_raw.csv feeds 2 tables.
-FILE_MAP = {
-    "stores.csv": "retail_raw.stores",
-    "products.csv": "retail_raw.products",
-    "customers.csv": "retail_raw.customers",
+    "password": os.getenv("POSTGRES_PASSWORD", "retail_admin123"),
 }
 
-RETAIL_RAW_CSV = CSV_DIR / "retail_raw.csv"
-INVOICES_TABLE = "retail_raw.invoices"
-ITEMS_TABLE = "retail_raw.invoice_items"
+SCHEMA = "retail_raw"
 
-def normalize(s):
-    return re.sub(r'[^0-9a-z]+','_', str(s).strip().lower()).strip('_')
+# FINAL DDL - 5 TABLES WITH REAL STRUCTURES, ALL TEXT FOR BRONZE
+DDL = f"""
+CREATE SCHEMA IF NOT EXISTS {SCHEMA};
 
-def get_table_cols(cur, full_table):
-    schema, table = full_table.split('.',1)
-    cur.execute("""
-        SELECT column_name, data_type FROM information_schema.columns
-        WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position
-    """,(schema, table))
-    rows = cur.fetchall()
-    if not rows:
-        raise Exception(f"Table {full_table} not found in WSL")
-    return rows
+DROP TABLE IF EXISTS {SCHEMA}.invoice_items CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.invoices CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.stores CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.products CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.customers CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.retail_raw CASCADE;
+DROP TABLE IF EXISTS {SCHEMA}.retail_raw_staging CASCADE;
 
-def clean(v, pg_type):
-    if v is None: return None
-    s=str(v).strip()
-    if s=='' or s.lower()=='null': return None
-    if pg_type in ('integer','bigint','smallint'):
-        try: return int(s)
-        except:
-            m=re.search(r'-?\d+', s)
-            return int(m.group()) if m else None
-    if pg_type in ('numeric','double precision','real','decimal'):
-        try: return float(re.sub(r'[^0-9\.\-]','',s))
-        except: return None
-    return s
+-- 1. stores.csv
+CREATE TABLE {SCHEMA}.stores (
+    store_id TEXT,
+    store_name TEXT,
+    city TEXT,
+    state TEXT,
+    zip_code TEXT,
+    region TEXT,
+    manager_name TEXT,
+    opened_date TEXT,
+    square_footage TEXT
+);
 
-def load_simple_table(cur, csv_path, full_table):
-    print(f"\n=== {csv_path.name} -> {full_table} ===")
-    table_cols = get_table_cols(cur, full_table)
-    print(f"WSL cols: {[c[0] for c in table_cols]}")
+-- 2. products.csv
+CREATE TABLE {SCHEMA}.products (
+    product_id TEXT,
+    sku TEXT,
+    product_name TEXT,
+    category TEXT,
+    subcategory TEXT,
+    brand TEXT,
+    unit_price TEXT,
+    cost TEXT,
+    is_active TEXT
+);
 
-    with open(csv_path,'r',encoding='utf-8-sig',newline='') as f:
-        reader = csv.DictReader(f)
-        csv_headers = reader.fieldnames
-        print(f"CSV cols: {csv_headers}")
-        csv_norm = {normalize(h): h for h in csv_headers}
+-- 3. customers.csv - WITH FIRST_NAME, LAST_NAME, ADDRESS AS YOU DEMANDED
+CREATE TABLE {SCHEMA}.customers (
+    customer_id TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    email TEXT,
+    phone TEXT,
+    street_address TEXT,
+    city TEXT,
+    state TEXT,
+    zip_code TEXT,
+    loyalty_tier TEXT,
+    join_date TEXT
+);
 
-        insert_cols=[]
-        for t_col, t_type in table_cols:
-            if t_col == 'raw_id' and normalize(t_col) not in csv_norm:
-                continue
-            if t_col == 'ingestion_ts' and normalize(t_col) not in csv_norm:
-                continue
-            src = csv_norm.get(normalize(t_col))
-            if not src:
-                for cnorm, corig in csv_norm.items():
-                    if normalize(t_col) in cnorm or cnorm in normalize(t_col):
-                        src=corig; break
-            if src:
-                insert_cols.append((t_col, src, t_type))
+-- 4. invoices (header from retail_raw.csv)
+CREATE TABLE {SCHEMA}.invoices (
+    invoice_id TEXT,
+    store_id TEXT,
+    customer_id TEXT,
+    invoice_date TEXT,
+    payment_method TEXT
+);
 
-        print(f"Mapping: {[(c[0]+'<-'+c[1]) for c in insert_cols]}")
-        cur.execute(f"TRUNCATE TABLE {full_table} CASCADE;")
-        rows=[tuple(clean(r.get(src), ttype) for _,src,ttype in insert_cols) for r in reader]
-        if not rows: return
-        cols_sql=", ".join([f'"{c}"' for c,_,_ in insert_cols])
-        ph=", ".join(["%s"]*len(insert_cols))
-        extras.execute_batch(cur, f'INSERT INTO {full_table} ({cols_sql}) VALUES ({ph})', rows, page_size=1000)
-        print(f"Loaded {len(rows)} rows")
+-- 5. invoice_items (lines from retail_raw.csv)
+CREATE TABLE {SCHEMA}.invoice_items (
+    invoice_id TEXT,
+    line_item TEXT,
+    product_id TEXT,
+    quantity TEXT,
+    unit_price TEXT,
+    discount TEXT
+);
 
-def load_invoices_and_items(cur):
-    print(f"\n=== {RETAIL_RAW_CSV.name} -> {INVOICES_TABLE} + {ITEMS_TABLE} ===")
-    if not RETAIL_RAW_CSV.exists():
-        print("retail_raw.csv not found"); return
+-- Staging for the denormalized file
+CREATE TABLE {SCHEMA}.retail_raw_staging (
+    invoice_id TEXT,
+    store_id TEXT,
+    customer_id TEXT,
+    invoice_date TEXT,
+    payment_method TEXT,
+    line_item TEXT,
+    product_id TEXT,
+    quantity TEXT,
+    unit_price TEXT,
+    discount TEXT
+);
+"""
 
-    # read once
-    with open(RETAIL_RAW_CSV,'r',encoding='utf-8-sig',newline='') as f:
-        reader = list(csv.DictReader(f))
-    csv_headers = reader[0].keys() if reader else []
-    csv_norm = {normalize(h): h for h in csv_headers}
-    print(f"retail_raw.csv cols: {list(csv_headers)}")
+def get_conn():
+    print(f"Connecting {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']} as {DB_CONFIG['user']}")
+    return psycopg2.connect(**DB_CONFIG)
 
-    # --- INVOICES: distinct invoice_id ---
-    inv_cols = get_table_cols(cur, INVOICES_TABLE)
-    print(f"Invoices WSL cols: {[c[0] for c in inv_cols]}")
-    inv_insert=[]
-    for t_col, t_type in inv_cols:
-        if t_col in ('raw_id','ingestion_ts') and normalize(t_col) not in csv_norm:
-            continue
-        src = csv_norm.get(normalize(t_col))
-        if not src:
-            for cnorm, corig in csv_norm.items():
-                if normalize(t_col) in cnorm or cnorm in normalize(t_col):
-                    src=corig; break
-        if src:
-            inv_insert.append((t_col, src, t_type))
+def copy_csv_with_cols(conn, table, csv_path):
+    if not csv_path.exists():
+        print(f"  SKIP {table}: {csv_path} not found")
+        return 0
+    size_mb = csv_path.stat().st_size / 1024 / 1024
+    print(f"\nCOPY {SCHEMA}.{table} <- {csv_path.name} ({size_mb:.1f} MB)")
+    
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        header = f.readline().strip()
+    cols = [c.strip() for c in header.split(',')]
+    cols_sql = ', '.join([f'"{c}"' for c in cols])
 
-    cur.execute(f"TRUNCATE TABLE {ITEMS_TABLE} CASCADE;")
-    cur.execute(f"TRUNCATE TABLE {INVOICES_TABLE} CASCADE;")
+    t0 = time.time()
+    with conn.cursor() as cur:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            cur.copy_expert(f"COPY {SCHEMA}.{table} ({cols_sql}) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)", f)
+    conn.commit()
+    
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {SCHEMA}.{table}")
+        cnt = cur.fetchone()[0]
+    print(f"  -> {cnt} rows in {time.time()-t0:.1f}s")
+    return cnt
 
-    seen=set()
-    inv_rows=[]
-    for r in reader:
-        inv_id = r.get(csv_norm.get('invoice_id') or 'invoice_id')
-        if inv_id in seen: continue
-        seen.add(inv_id)
-        inv_rows.append(tuple(clean(r.get(src), ttype) for _,src,ttype in inv_insert))
+if __name__ == "__main__":
+    is_sample = "--sample" in sys.argv
+    do_truncate = "--truncate" in sys.argv
 
-    cols_sql=", ".join([f'"{c}"' for c,_,_ in inv_insert])
-    ph=", ".join(["%s"]*len(inv_insert))
-    extras.execute_batch(cur, f'INSERT INTO {INVOICES_TABLE} ({cols_sql}) VALUES ({ph})', inv_rows, page_size=1000)
-    print(f"Loaded {len(inv_rows)} invoices")
+    base = Path("data/samples") if is_sample else Path("data/raw")
+    print(f"Loading from: {base.resolve()} - Mode: {'SAMPLE' if is_sample else 'FULL'}")
 
-    # --- ITEMS ---
-    item_cols = get_table_cols(cur, ITEMS_TABLE)
-    print(f"Items WSL cols: {[c[0] for c in item_cols]}")
-    item_insert=[]
-    for t_col, t_type in item_cols:
-        if t_col in ('raw_id','ingestion_ts') and normalize(t_col) not in csv_norm:
-            continue
-        src = csv_norm.get(normalize(t_col))
-        if not src:
-            for cnorm, corig in csv_norm.items():
-                if normalize(t_col) in cnorm or cnorm in normalize(t_col):
-                    src=corig; break
-        if src:
-            item_insert.append((t_col, src, t_type))
-
-    item_rows=[tuple(clean(r.get(src), ttype) for _,src,ttype in item_insert) for r in reader]
-    cols_sql=", ".join([f'"{c}"' for c,_,_ in item_insert])
-    ph=", ".join(["%s"]*len(item_insert))
-    extras.execute_batch(cur, f'INSERT INTO {ITEMS_TABLE} ({cols_sql}) VALUES ({ph})', item_rows, page_size=1000)
-    print(f"Loaded {len(item_rows)} invoice_items")
-
-def main():
-    print(f"CSV_DIR: {CSV_DIR.resolve()}")
-    conn=psycopg2.connect(**DB_CONFIG)
+    conn = get_conn()
     try:
-        cur=conn.cursor()
-        # 1. simple dims
-        for csv_name, table in FILE_MAP.items():
-            p=CSV_DIR/csv_name
-            if p.exists():
-                load_simple_table(cur, p, table)
-            else:
-                print(f"Missing {p}")
-        # 2. fact split
-        load_invoices_and_items(cur)
+        with conn.cursor() as cur:
+            cur.execute(DDL)
         conn.commit()
-        print("\nCOMMIT OK")
-    except Exception as e:
-        conn.rollback()
-        print(f"ROLLBACK {e}")
-        raise
+        print("DDL done: 5 tables created with REAL structures (stores, products, customers, invoices, invoice_items) + staging")
+
+        if do_truncate:
+            print("Truncating all 5 tables...")
+            with conn.cursor() as cur:
+                cur.execute(f"TRUNCATE {SCHEMA}.stores, {SCHEMA}.products, {SCHEMA}.customers, {SCHEMA}.invoices, {SCHEMA}.invoice_items, {SCHEMA}.retail_raw_staging CASCADE;")
+            conn.commit()
+
+        # 1,2,3 - direct loads
+        copy_csv_with_cols(conn, "stores", base / "stores.csv")
+        copy_csv_with_cols(conn, "products", base / "products.csv")
+        copy_csv_with_cols(conn, "customers", base / "customers.csv")
+
+        # 4 - retail_raw.csv -> staging -> split into invoices + invoice_items
+        raw_file = base / "retail_raw.csv"
+        if not raw_file.exists():
+            raw_file = base / "invoices_sample.csv"
+            print(f"Using sample file: {raw_file}")
+
+        print(f"\nLoading denormalized {raw_file.name} into staging...")
+        copy_csv_with_cols(conn, "retail_raw_staging", raw_file)
+
+        print("\nSplitting staging -> invoices (DISTINCT header) + invoice_items (lines)...")
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                INSERT INTO {SCHEMA}.invoices (invoice_id, store_id, customer_id, invoice_date, payment_method)
+                SELECT DISTINCT invoice_id, store_id, customer_id, invoice_date, payment_method
+                FROM {SCHEMA}.retail_raw_staging;
+            """)
+            inv_cnt = cur.rowcount
+            cur.execute(f"""
+                INSERT INTO {SCHEMA}.invoice_items (invoice_id, line_item, product_id, quantity, unit_price, discount)
+                SELECT invoice_id, line_item, product_id, quantity, unit_price, discount
+                FROM {SCHEMA}.retail_raw_staging;
+            """)
+            items_cnt = cur.rowcount
+        conn.commit()
+        print(f"  -> invoices: {inv_cnt} rows")
+        print(f"  -> invoice_items: {items_cnt} rows")
+
+        # Clean staging
+        with conn.cursor() as cur:
+            cur.execute(f"DROP TABLE {SCHEMA}.retail_raw_staging;")
+        conn.commit()
+
+        # VERIFY
+        print("\n=== FINAL VERIFY - 5 TABLES ===")
+        with conn.cursor() as cur:
+            for tbl in ["stores","products","customers","invoices","invoice_items"]:
+                cur.execute(f"SELECT COUNT(*) FROM {SCHEMA}.{tbl}")
+                cnt = cur.fetchone()[0]
+                print(f"  {tbl}: {cnt}")
+
     finally:
         conn.close()
-
-if __name__=="__main__":
-    main()

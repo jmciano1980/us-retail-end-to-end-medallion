@@ -1,39 +1,19 @@
-# M2 - Data Generation
+# 02 - Data Generation
 
-## Objective
-Generate dirty US retail data simulating a real source system.
+**Script:** 02_data_gen/generate_retail_data.py
+**Output:** data/raw/ (FULL gitignored) stores.csv, products.csv, customers.csv, retail_raw.csv
+**Sample:** data/samples/ (for GitHub) stores.csv, products.csv, customers.csv, invoices_sample.csv
 
-## Tool
-VMWare Win11 Dev VM, Python 3.11, Faker en_US, seed 42
+retail_raw schema: invoice_id,store_id,customer_id,invoice_date,payment_method,line_item,product_id,quantity,unit_price,discount
 
-## Datasets Generated
-- `data/raw/retail_raw.csv` - 1,000,000 rows denormalized fact (main source for Postgres)
-- `data/raw/stores.csv` - 50 rows
-- `data/raw/products.csv` - 2500 rows
-- `data/raw/customers.csv` - 100,000 rows
-- `data/raw/invoices_sample.csv` - 10k sample headers
+Scale: 50 stores, 2500 products, 100k customers, 55M invoices, ~200M rows
+Years: 2023 30%, 2024 33%, 2025 37%
+Errors 1%: null_date, null_payment, no_customer, no_items, bad_product
 
-## Schema retail_raw.csv
-raw_id PK, invoice_id, line_item, store_id, store_name, region,
-product_id, product_name, category, subcategory,
-customer_id, customer_email,
-quantity, unit_price, discount, line_total,
-invoice_date, payment_method
+Run TEST:
+python 02_data_gen/generate_retail_data.py 1000000
 
-## Error Injection 1-2%
-- 0.4% null customer_id -> customer_id = ''
-- 0.3% invalid store_id -> store_id = 99999
-- 0.3% negative quantity -> quantity = -qty
-- 0.3% invalid product_id -> product_id = 9999999
-- 0.3% zero price -> unit_price = 0
-- 0.4% future date -> invoice_date = 2026-06-15
+FULL:
+python 02_data_gen/generate_retail_data.py 55000000
 
-Total dirty ~2% to be quarantined in Silver layer.
-
-## Validation
-
-## How to run
-```powershell
-.\.venv\Scripts\Activate.ps1
-python 02_data_gen/generate_retail_data.py
-
+Git: data/raw/*.csv ignored, only data/samples/ committed

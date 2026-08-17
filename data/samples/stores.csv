@@ -1,0 +1,51 @@
+store_id,store_name,city,state,zip_code,region,manager_name,opened_date,square_footage
+1,SuperMart - Houston West,Houston,TX,77002,South,Allison Hill,2020-07-10,36024
+2,Fresh Market - Dallas East,Dallas,TX,75201,South,Brian Yang,2023-04-07,27144
+3,SuperMart - Austin Central,Austin,TX,78701,South,Javier Johnson,2020-06-26,23697
+4,Family Mart - Miami South,Miami,FL,33101,South,Lance Hoffman,2024-09-18,20082
+5,SuperMart - Orlando West,Orlando,FL,32801,South,Kimberly Robinson,2023-08-21,32328
+6,Fresh Market - Atlanta Central,Atlanta,GA,30303,South,Sean Blake,2019-12-26,57453
+7,SuperMart - Charlotte Central,Charlotte,NC,28202,South,Gina Moore,2025-02-13,31031
+8,Family Mart - Nashville South,Nashville,TN,37201,South,Brandon Davis,2021-07-20,32446
+9,City Grocers - New Orleans Central,New Orleans,LA,70112,South,Renee Blair,2023-03-10,36231
+10,SuperMart - Tampa East,Tampa,FL,33602,South,Thomas Miller,2021-02-12,63753
+11,City Grocers - New York North,New York,NY,10001,Northeast,Lisa Hensley,2023-07-15,36210
+12,Fresh Market - Boston East,Boston,MA,02101,Northeast,Benjamin Stanley,2025-03-14,40059
+13,SuperMart - Philadelphia West,Philadelphia,PA,19102,Northeast,Bobby Hall,2019-06-26,42898
+14,SuperMart - Newark North,Newark,NJ,07102,Northeast,Jesse Flowers,2020-01-04,40541
+15,Family Mart - Providence North,Providence,RI,02901,Northeast,Daniel Adams,2024-06-09,20847
+16,City Grocers - Hartford Central,Hartford,CT,06101,Northeast,Lisa Jackson,2024-10-29,26180
+17,City Grocers - Buffalo West,Buffalo,NY,14202,Northeast,Joel Nelson,2024-01-26,54178
+18,Value Foods - Pittsburgh Central,Pittsburgh,PA,15201,Northeast,Colleen Nguyen,2025-02-28,41700
+19,Family Mart - Baltimore East,Baltimore,MD,21201,Northeast,Crystal Johnson,2021-04-23,64174
+20,SuperMart - Washington West,Washington,DC,20001,South,Austin Gentry,2023-06-14,61336
+21,Fresh Market - Chicago North,Chicago,IL,60601,Midwest,Emily Rios,2021-12-28,23229
+22,Fresh Market - Columbus West,Columbus,OH,43215,Midwest,Maria Thomas,2019-10-24,42911
+23,Value Foods - Detroit South,Detroit,MI,48201,Midwest,Justin Baker,2023-08-07,59660
+24,Value Foods - Milwaukee East,Milwaukee,WI,53202,Midwest,Kevin Cox,2019-10-20,42260
+25,Value Foods - Minneapolis East,Minneapolis,MN,55401,Midwest,Ann Williams,2019-07-23,61920
+26,Value Foods - St Louis West,St Louis,MO,63101,Midwest,Christopher Becker,2023-09-12,57920
+27,Fresh Market - Indianapolis Central,Indianapolis,IN,46201,Midwest,James Ferrell,2023-02-15,34043
+28,Fresh Market - Kansas City South,Kansas City,MO,64101,Midwest,Juan Dunlap,2024-05-30,42867
+29,Value Foods - Cleveland Central,Cleveland,OH,44101,Midwest,Melanie Herrera,2020-11-22,32392
+30,Value Foods - Cincinnati West,Cincinnati,OH,45202,Midwest,Gina Carter,2019-12-21,33010
+31,SuperMart - Los Angeles North,Los Angeles,CA,90001,West,Troy Liu,2020-11-12,44290
+32,Value Foods - San Diego West,San Diego,CA,92101,West,Pamela Romero,2019-07-13,31826
+33,Family Mart - San Francisco North,San Francisco,CA,94102,West,Elizabeth Fowler,2023-10-22,31934
+34,City Grocers - San Jose South,San Jose,CA,95101,West,James Martin,2025-04-01,60129
+35,City Grocers - Seattle East,Seattle,WA,98101,West,Tamara George,2022-10-13,35359
+36,Fresh Market - Portland East,Portland,OR,97201,West,Timothy Koch,2025-06-27,54789
+37,Family Mart - Phoenix North,Phoenix,AZ,85001,West,Anthony Humphrey,2019-04-18,56311
+38,City Grocers - Denver Central,Denver,CO,80202,West,John Jones,2025-02-04,44175
+39,Value Foods - Las Vegas East,Las Vegas,NV,89101,West,Beth Keller,2023-04-21,27065
+40,Family Mart - Salt Lake City South,Salt Lake City,UT,84101,West,Joseph Obrien,2020-06-05,23957
+41,SuperMart - Albuquerque West,Albuquerque,NM,87101,West,Nicole Vaughn,2024-09-09,28016
+42,Fresh Market - Boise South,Boise,ID,83702,West,Zachary Santos,2022-05-09,57086
+43,SuperMart - Honolulu South,Honolulu,HI,96801,West,Jocelyn Wright,2019-03-03,43009
+44,Family Mart - Anchorage South,Anchorage,AK,99501,West,Kevin Hall,2020-07-01,52676
+45,Value Foods - Sacramento Central,Sacramento,CA,95814,West,Michael Brown,2019-03-14,18752
+46,SuperMart - Fresno Central,Fresno,CA,93721,West,Shannon Jones,2020-08-25,35486
+47,Value Foods - Tucson West,Tucson,AZ,85701,West,John Ryan,2024-10-11,37234
+48,City Grocers - Colorado Springs East,Colorado Springs,CO,80903,West,Laura Kennedy,2025-04-19,47735
+49,SuperMart - Oklahoma City North,Oklahoma City,OK,73102,South,Jason Davis,2024-03-25,50806
+50,Fresh Market - Louisville Central,Louisville,KY,40202,South,Jeff Owens,2024-10-29,24973
