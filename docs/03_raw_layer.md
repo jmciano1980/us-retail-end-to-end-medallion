@@ -153,7 +153,7 @@ python 03_raw_layer\load_to_postgres.py
 ```
 
 Expected:
-
+git s
 ```
 === stores.csv -> retail_raw.stores ===
 WSL cols: [raw_id, store_id, store_name, region, state, city, ...]
