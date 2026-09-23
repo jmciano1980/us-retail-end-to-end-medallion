@@ -9,10 +9,10 @@ Auth:
   Env vars: DATABRICKS_HOST=https://dbc-xxxx.cloud.databricks.com + DATABRICKS_TOKEN=dapi...
 
 Usage (from project root):
-  python 04_databricks/03_data_export/04_upload_parquet_to_databricks_volume.py
+  python 04_databricks/02_data_export/02_upload_parquet_to_databricks_volume.py
 
 Or with custom paths:
-  python 04_databricks/03_data_export/04_upload_parquet_to_databricks_volume.py --local-path data/parquet_export --volume-path /Volumes/workspace/retail/raw_postgres_export
+  python 04_databricks/02_data_export/02_upload_parquet_to_databricks_volume.py --local-path data/parquet_export --volume-path /Volumes/workspace/retail/raw_postgres_export
 """
 """
 M4.1 -> M4.2 - Fixed version: volume enum + SSL retry

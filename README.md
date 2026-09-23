@@ -2,7 +2,7 @@
 
 An end-to-end data engineering portfolio project simulating a large US supermarket chain.
 
-**Goal:** Generate 1M synthetic transactions with realistic data quality issues, ingest into Postgres as OLTP source, build a Medallion Architecture (Raw -> Bronze -> Silver -> Gold) on Databricks with PySpark + Delta Lake, and serve Gold tables to Power BI for executive dashboards.
+**Goal:** Generate 55M synthetic transactions with realistic data quality issues, ingest into Postgres as OLTP source, build a Medallion Architecture (Raw -> Bronze -> Silver -> Gold) on Databricks with PySpark + Delta Lake, and serve Gold tables to Power BI for executive dashboards.
 
 **Business Context:** USA only. 50 stores across 4 US Census regions. 2,500 products, 100k customers.
 
@@ -11,8 +11,6 @@ An end-to-end data engineering portfolio project simulating a large US supermark
 -> [VMWare Win11 Dev VM: Python, DBeaver, VS Code]
 -> [Databricks Free Edition: Delta Lake]
 -> [Power BI: Gold Layer]
-
-See docs/03_medallion_flow.md for diagram.
 
 ## Tech Stack
 - Source Generation: Python, Faker (en_US), PyYAML
@@ -28,8 +26,8 @@ See docs/03_medallion_flow.md for diagram.
 ## How to Run (Milestone 1 & 2)
 1. Copy .env.example to .env
 2. Start Postgres: `docker compose up -d` from project root in WSL2
-3. Generate data: `python 02_data_generation/generate_retail_data.py` (inside VMware VM)
-4. Load to Postgres: `python 03_ingestion/load_csv_to_postgres.py`
+3. Generate data: `python 02_data_gen/generate_retail_data.py` (inside VMware VM)
+4. Load to Postgres: `python 03_raw_layer/load_to_postgres.py`
 5. Verify in DBeaver
 
 ## Resource Allocation for 64GB RAM Machine
@@ -68,7 +66,7 @@ Raw layer is permissive - it allows NULLs, bad types, and stores ingestion metad
 We run Postgres in Docker inside **WSL2 Ubuntu**. DEV VM cannot reach WSL2 directly, so Host acts as router.
 
 
-### M4 - Databricks Bronze/Silver/Gold - TODO
+### M4 - Databricks Bronze/Silver/Gold - DOING
 ### M5 - Data Quality - TODO
 ### M6 - Orchestration - TODO
 ### M7 - Power BI - TODO

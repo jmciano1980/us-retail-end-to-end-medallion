@@ -2,7 +2,7 @@
 M4.1 - export_postgres_to_parquet.py - FULL MODE OPTIMIZED
 Exports 5 tables FROM Postgres (retail_raw.*) to Parquet for Bronze ingestion
 
-Location: 04_databricks/01_postgres_to_parquet/export_postgres_to_parquet.py
+Location: 04_databricks/01_postgres_to_parquet/01_export_postgres_to_parquet.py
 
 Why Parquet?
 - Columnar + Snappy compressed, 70% smaller than CSV
@@ -18,7 +18,7 @@ Full mode estimation:
 Total: ~12 GB, 53 files
 
 Run in WSL2:
-  python 04_databricks/01_postgres_to_parquet/export_postgres_to_parquet.py --batch-size 5000000
+  python 04_databricks/01_postgres_to_parquet/01_export_postgres_to_parquet.py --batch-size 5000000
 
 Time: stores/products/customers 10 sec, invoices 15-20 min, invoice_items 45-60 min
 """
@@ -179,6 +179,6 @@ if __name__ == "__main__":
     finally:
         conn.close()
     
-    print("\nNext: M4.2 Bronze ingestion")
-    print("  Local: python 04_databricks/02_bronze_ingestion/01_bronze_ingest_from_parquet.py --local")
-    print("  Databricks: upload to dbfs:/FileStore/retail/raw_postgres_export/")
+    print("\nNext: M4.2 Data export")
+    print("  Local: python 04_databricks/02_data_export/02_upload_parquet_to_databricks_volume.py --local")
+    print("  READ FILE DATABRICKS_UPLOAD_GUIDE.md")

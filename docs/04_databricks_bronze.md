@@ -41,6 +41,7 @@ The numbering in the repo is historical. The logical execution order is:
 
 ```bash
 /docs/
+├── 00_setup.md                       # Main setup of the environment
 ├── 01_postgres_to_parquet.md         # Design of export script
 ├── 02_data_export.md                 # M4.1 - Actual export run (53 files, 1.93GB)
 ├── 03_bronze_ingestion.md            # Depends on 02 output existing

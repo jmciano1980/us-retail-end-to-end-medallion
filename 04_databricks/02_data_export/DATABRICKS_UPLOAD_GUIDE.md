@@ -1,6 +1,6 @@
 # 03_data_export - How to Load Parquet Files into Databricks (Free Edition)
 
-Order: BEFORE 02_bronze_ingestion
+Order: BEFORE 03_bronze_ingestion
 Data: 53 files / 1.93 GB / Volume /Volumes/workspace/retail/raw_postgres_export
 
 ### 1. The 3 Errors You Hit
