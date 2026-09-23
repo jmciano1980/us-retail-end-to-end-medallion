@@ -2,7 +2,8 @@
 
 > **File:** `/docs/04_databricks_bronze.md`  
 > **Module:** M4 - Retail Analytics Platform - Medallion Architecture  
-> **Stack:** Postgres (WSL Docker) → Parquet → Databricks Free Edition (dbc-a6423fd6-0d52.cloud.databricks.com) → Delta Bronze
+> **Stack:** Postgres (WSL Docker) → Parquet → Databricks Free Edition (dbc-a6423fd6-0d52.cloud.databricks.com) → Delta Bronze  
+> **Last Updated:** 2025-10 - Fixed v2 - No Reload Bug
 
 ---
 
@@ -20,7 +21,7 @@ Postgres (OLTP) → Parquet Export (Staging) → Databricks Volume → Bronze (D
 
 **Why Postgres -> Parquet -> Bronze instead of direct JDBC?**
 
-1.  **Network Isolation (Free Edition):** Databricks Free Edition (serverless) runs on ``dbc-a6423fd6-0d52.cloud.databricks.com`` and **cannot** reach private WSL networks. The Postgres instance at `192.168.182.1:5432` (WSL2 vEthernet adapter IP) is unreachable from Databricks cloud. Direct JDBC ingestion fails with timeout.
+1.  **Network Isolation (Free Edition):** Databricks Free Edition (serverless) runs on `dbc-a6423fd6-0d52.cloud.databricks.com` and **cannot** reach private WSL networks. The Postgres instance at `192.168.182.1:5432` (WSL2 vEthernet adapter IP) is unreachable from Databricks cloud. Direct JDBC ingestion fails with timeout.
 2.  **Decoupling & Reproducibility:** Parquet files are compressed columnar, immutable artifacts. We can re-ingest Bronze without hitting prod Postgres.
 3.  **Performance:** Exporting 55M invoices via JDBC to Databricks would take hours and stress Postgres. Exporting locally with keyset pagination is 10x faster and resumable.
 4.  **Cost:** Free Edition has no DLT pipeline credits for long JDBC jobs. Uploading files to Volumes is free and fast.
@@ -28,43 +29,50 @@ Postgres (OLTP) → Parquet Export (Staging) → Databricks Volume → Bronze (D
 ### Goal of This Step
 
 - Generate deterministic Parquet exports (01)
-- Stage them locally (03)
-- Provision Databricks environment: Catalog, Schema, Volume (02 setup)
-- Upload to `/Volumes/workspace/retail/raw_postgres_export/` reliably
+- Stage them locally and upload to Volume (02)
+- Provision Databricks environment: Catalog, Schema, Volume, Control Log (04 DDL)
+- Incremental Bronze load with file tracking - NO RELOAD (05)
 
 ---
 
-## 2. Folder Structure - Critical Order
-
+## 2. Folder Structure - CORRECT ORDER - UPDATED
 
 The numbering in the repo is historical. The logical execution order is:
 
 ```bash
 /docs/
-├── 00_setup.md                       # Main setup of the environment
-├── 01_postgres_to_parquet.md         # Design of export script
-├── 02_data_export.md                 # M4.1 - Actual export run (53 files, 1.93GB)
-├── 03_bronze_ingestion.md            # Depends on 02 output existing
-└── 04_databricks_bronze.md           # THIS FILE - Setup + Upload (depends on 03)
+├── 00_setup.md
+├── 01_postgres_infra.md         
+├── 02_architecture_decisions.md
+├── 02_data_generation.md
+├── 03_raw_layer.md       
+└── 04_databricks_bronze.md
 
-src/
+04_databricks/
 ├── 01_postgres_to_parquet/
-│   └── 01_export_postgres_to_parquet.py          # Keyset pagination, Snappy compression
-├── 02_data_export/
-│   └── 02_upload_parquet_to_databricks_volume.py
-├── 03_bronze_ingestion/
-│   ├── 03_bronze_ingest_from_parquet.py            # VolumeType.MANAGED fix
-│   ├── notebook_bronze_ingest_databricks.py
-└── data/
-    └── parquet_export/               # Gitignored, 53 files
-        ├── stores/          -> 1 file, 50 rows
-        ├── products/        -> 1 file, 2,500 rows
-        ├── customers/       -> 1 file, 100,000 rows
-        ├── invoices/        -> 11 files, 55,000,000 rows
-        └── invoice_items/   -> 40 files, ~200,000,000 rows
+│   ├── 01_export_postgres_to_parquet.py  # M4.1 Export - keyset pagination WHERE id > last_id
+│   └── requirements.txt
+├── 02_data_export/                     # M4.1b Upload - MUST BE BEFORE BRONZE
+│   ├── 02_upload_parquet_to_databricks_volume.py
+│   ├── upload_via_cli.sh
+│   └── DATABRICKS_UPLOAD_GUIDE.md
+└── 03_bronze_ingestion/                # M4.2 Bronze - UPDATED STRUCTURE
+    ├── 03_bronze_ingest_from_parquet.sql   # Legacy local Spark
+    ├── 04_bronze_ddl.sql               # M4.2a DDL - MANUAL ONCE - .sql recommended
+    ├── 05_bronze_loading_process.py    # M4.2b Loading - JOB - Incremental, all tables, NO RELOAD (fixed v2)
+    ├── 06_bronze_control_queries.sql   # M4.2c Verification queries
+    └── notebook_bronze_ingest_databricks.py
+
+data/
+└── parquet_export/               # Gitignored, 53 files
+    ├── stores/          -> 1 file, 50 rows
+    ├── products/        -> 1 file, 2,500 rows
+    ├── customers/       -> 1 file, 100,000 rows
+    ├── invoices/        -> 11 files, 55,000,000 rows
+    └── invoice_items/   -> 40 files, ~200,000,000 rows
 ```
 
-**Why this order matters:** `03_bronze_ingestion` validates existence of `./data/parquet_export` and lists Unity Catalog volume. 
+**Why this order matters:** `02_data_export` MUST be before `03_bronze_ingestion`. Volume must contain 53 files before Bronze DDL.
 
 ---
 
@@ -114,155 +122,105 @@ We implement **keyset pagination** using `WHERE id > last_id`.
 
 ```bash
 # Step 1: Smoke test with small tables only
-python src/01_postgres_to_parquet/01_export_postgres_to_parquet.py --small-only --verify
-
-# Expected: 3 files, <5MB, exit code 0
+python 04_databricks/01_postgres_to_parquet/01_export_postgres_to_parquet.py --small-only --verify
 
 # Step 2: Full export (takes 18-25 min on i7/32GB/SSD)
-python src/01_postgres_to_parquet/01_export_postgres_to_parquet.py --full --batch-size 5000000
-
-# Step 3: Verification
-du -sh ./data/parquet_export/*
-# stores      8.0K
-# products    144K
-# customers   4.8M
-# invoices    721M (11 files)
-# invoice_items 1.2G (40 files)
-
-ls -1 ./data/parquet_export/**/*.parquet | wc -l
-# 53
-
-# Postgres checkpoint - row counts must match
-psql -h 192.168.182.1 -U retail_user -d retail_db -c "
-SELECT 'stores' as tbl, COUNT(*) FROM stores
-UNION ALL SELECT 'products', COUNT(*) FROM products
-UNION ALL SELECT 'customers', COUNT(*) FROM customers
-UNION ALL SELECT 'invoices', COUNT(*) FROM invoices
-UNION ALL SELECT 'invoice_items', COUNT(*) FROM invoice_items;
-"
-```
-
-### 3.5 Python Export Snippet (Key Logic)
-
-```python
-def export_table_keyset(conn, table: str, batch_size: int = 5_000_000):
-    last_id = 0
-    file_idx = 0
-    while True:
-        df = pd.read_sql(
-            f"SELECT * FROM {table} WHERE id > %(last_id)s ORDER BY id LIMIT %(limit)s",
-            conn, params={"last_id": last_id, "limit": batch_size}
-        )
-        if df.empty:
-            break
-        last_id = int(df["id"].max())
-        pq.write_table(
-            pa.Table.from_pandas(df),
-            f"./data/parquet_export/{table}/{table}_{file_idx:03d}.parquet",
-            compression="snappy"
-        )
-        file_idx += 1
+python -u 04_databricks/01_postgres_to_parquet/01_export_postgres_to_parquet.py --batch-size 5000000
 ```
 
 ---
 
-## 4. Databricks Environment Setup and Structure
+## 4. Databricks Environment Setup (M4.2a - DDL)
 
-### 4.1 Why Free Edition Needs New CLI
-
-Host: `https://dbc-a6423fd6-0d52.cloud.databricks.com`
-
-**Old CLI (pip install databricks-cli 0.17.x):**
-- Uses PAT-based auth only
-- No `auth` command: `databricks auth login` -> `Error: No such command 'auth'`
-- `fs cp` uses legacy `dbfs:/` API, not Unity Catalog Volumes
-
-**New CLI (v0.213.0+):**
-- Go-based, installed via curl script
-- Supports OAuth U2M (user-to-machine) browser flow
-- Supports Volumes: `databricks fs cp` -> maps to `/Volumes/...`
-- Auth profiles stored in `~/.databrickscfg` + `~/.config/databricks/auth.json`
-
-```bash
-# Install new CLI (DO NOT use pip)
-curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sudo sh
-
-databricks --version
-# Databricks CLI v0.218.0
-```
-
-### 4.2 Unity Catalog Structure
+### 4.1 Unity Catalog Hierarchy - UPDATED
 
 ```
-Unity Catalog Hierarchy:
-├── Catalog: workspace (default catalog for Free Edition)
-│   ├── Schema: retail
-│   │   ├── Volume: raw_postgres_export (MANAGED) -> /Volumes/workspace/retail/raw_postgres_export/
-│   │   ├── Table: bronze_stores (Delta)
-│   │   ├── Table: bronze_products
-│   │   ├── Table: bronze_customers
-│   │   ├── Table: bronze_invoices
-│   │   └── Table: bronze_invoice_items
-│   └── Schema: default
+Catalog: workspace (Free Edition default)
+├── Schema: retail
+│   ├── Volume: raw_postgres_export (MANAGED) -> /Volumes/workspace/retail/raw_postgres_export/
+│   ├── Table: bronze_file_log (control log - tracks file_name + table_name)
+│   ├── Table: bronze_stores (Delta, 50 rows)
+│   ├── Table: bronze_products (2,500 rows)
+│   ├── Table: bronze_customers (100k rows)
+│   ├── Table: bronze_invoices (55M rows)
+│   └── Table: bronze_invoice_items (~200M rows)
+└── Schema: default
 ```
 
-### 4.3 Volume Creation - Critical Fix
+### 4.2 DDL - Manual Once - Fixed
 
-**Bug:** SDK `<1.20` expects enum, not string.
+**File:** `04_databricks/03_bronze_ingestion/04_bronze_ddl.sql` - **Type: .sql recommended**
 
-```python
-# ❌ WRONG - Fails with ValidationError: 'MANAGED' is not a valid VolumeType
-from databricks.sdk.service.catalog import VolumeType
-w.volumes.create(catalog_name="workspace", schema_name="retail",
-                 name="raw_postgres_export", volume_type="MANAGED")
+Creates:
+- Schema `workspace.retail`
+- Volume `raw_postgres_export` MANAGED
+- Control table `bronze_file_log` (file_name, file_path, table_name, status, row_count, file_size, first_seen_at, last_processed_at, job_run_id)
+- 5 Bronze tables with audit columns: `_source_file_name`, `_source_file_path`, `_ingest_timestamp`, `_update_timestamp`, `_bronze_load_id`
+- All original columns as STRING permissive to keep dirty data (1% dirty kept for Silver)
 
-# ✅ CORRECT - Use enum
-from databricks.sdk.service.catalog import VolumeType
-w.volumes.create(
-    catalog_name="workspace",
-    schema_name="retail",
-    name="raw_postgres_export",
-    volume_type=VolumeType.MANAGED,
-    comment="Raw Postgres Parquet export - 53 files, 1.93GB"
-)
-```
-
-**SQL equivalent (works in Databricks SQL editor):**
+**CRITICAL FIX:** Do NOT use `PARTITIONED BY (invoice_date)` in Bronze. This caused `invoices_part_0000` to hang - tries to create 1000 partitions for 1 file = OOM on Free Edition. Partitioning is Silver/Gold optimization, not Bronze.
 
 ```sql
-CREATE VOLUME IF NOT EXISTS workspace.retail.raw_postgres_export
-COMMENT 'Raw Postgres export staging';
+-- CORRECT - Bronze DDL - No partitioning
+CREATE TABLE IF NOT EXISTS workspace.retail.bronze_invoices (
+  invoice_id STRING,
+  store_id STRING,
+  customer_id STRING,
+  invoice_date STRING,
+  total_amount STRING,
+  discount_amount STRING,
+  tax_amount STRING,
+  payment_method STRING,
+  status STRING,
+  created_at STRING,
+  _source_file_name STRING,
+  _source_file_path STRING,
+  _ingest_timestamp TIMESTAMP,
+  _update_timestamp TIMESTAMP,
+  _bronze_load_id STRING
+) USING DELTA
+TBLPROPERTIES (
+  'delta.autoOptimize.optimizeWrite' = 'true',
+  'delta.autoOptimize.autoCompact' = 'true'
+);
+
+-- WRONG - Causes hang on Free Edition
+-- CREATE TABLE ... PARTITIONED BY (invoice_date) -- DO NOT DO THIS IN BRONZE
 ```
 
-**Volume Path (absolute):**
-```
-/Volumes/workspace/retail/raw_postgres_export/
-```
+Alternative Python version: `04_bronze_ddl.py` - same DDL via notebook.
 
-List to confirm:
+### 4.3 Truncate Utility
 
 ```sql
-LIST '/Volumes/workspace/retail/raw_postgres_export/';
+-- File: truncate_bronze.sql
+TRUNCATE TABLE workspace.retail.bronze_invoice_items;
+TRUNCATE TABLE workspace.retail.bronze_invoices;
+TRUNCATE TABLE workspace.retail.bronze_customers;
+TRUNCATE TABLE workspace.retail.bronze_products;
+TRUNCATE TABLE workspace.retail.bronze_stores;
+TRUNCATE TABLE workspace.retail.bronze_file_log;
 ```
 
 ---
 
-## 5. Uploading Parquet Files into Databricks Container
+## 5. Upload to Volume (M4.1b)
 
-### 5.1 The 3 Bugs Encountered (and Fixes)
+### 5.1 Bugs Found & Fixes
 
-#### Bug 1: Old CLI - `databricks auth` missing
+#### Bug 1: Wrong Volume Type Enum
 
-```bash
-databricks auth login --host https://dbc-a6423fd6-0d52.cloud.databricks.com
-# Error: No such command 'auth'
+```python
+# BAD - from old docs
+VolumeType.MANAGED  # AttributeError
 
-# Root cause: pip databricks-cli 0.17.x is deprecated
-pip uninstall databricks-cli -y
-curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sudo sh
+# GOOD - Fixed
+from databricks.sdk.service.catalog import VolumeType
+VolumeType.MANAGED  # Actually VolumeType.MANAGED is correct in newer SDK, but old SDK used different enum
+# Solution: Use SQL to create volume: CREATE VOLUME ... MANAGED
 ```
 
-#### Bug 2: PAT Authentication Blocked on Free Edition
+#### Bug 2: PAT vs OAuth
 
 ```bash
 export DATABRICKS_TOKEN=dapiXXXXXXXX
@@ -273,14 +231,10 @@ databricks fs ls /Volumes/workspace/retail/raw_postgres_export/
 **Free Edition blocks PATs.** Must use OAuth U2M.
 
 Fix:
-
 ```bash
 unset DATABRICKS_TOKEN
 unset DATABRICKS_HOST
-
 databricks auth login --host https://dbc-a6423fd6-0d52.cloud.databricks.com
-# Opens browser -> Login -> OAuth code -> Stores in ~/.databrickscfg
-
 databricks auth profiles
 # DEFAULT https://dbc-a6423fd6-0d52.cloud.databricks.com OAuth
 ```
@@ -288,7 +242,6 @@ databricks auth profiles
 #### Bug 3: SSL EOF + Bash Hash + Permission
 
 Three sub-issues during upload:
-
 1.  **SSL EOF:** Intermittent `SSLError: EOF occurred in violation of protocol` on large files. Fixed by retry logic in SDK script.
 2.  **Bash cache:** After reinstalling CLI, `bash: .venv/bin/databricks: No such file or directory` because bash hashed old path.
     ```bash
@@ -302,74 +255,26 @@ Three sub-issues during upload:
 
 ### 5.2 Method A: SDK Script with Retry (Recommended for >1GB)
 
-File: `src/03_bronze_ingestion/03_bronze_ingest_from_parquet.py`
-
-```python
-from databricks.sdk import WorkspaceClient
-import os, time
-from pathlib import Path
-
-w = WorkspaceClient(host="https://dbc-a6423fd6-0d52.cloud.databricks.com", auth_type="oauth")
-
-SRC = Path("./data/parquet_export")
-VOLUME = "/Volumes/workspace/retail/raw_postgres_export"
-
-def upload_with_retry(local_path: Path, remote_path: str, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            with open(local_path, "rb") as f:
-                w.files.upload(remote_path, f, overwrite=True)
-            print(f"✓ {local_path.name} -> {remote_path}")
-            return True
-        except Exception as e:
-            print(f"Retry {attempt+1}/{max_retries} for {local_path.name}: {e}")
-            time.sleep(2 ** attempt)
-    return False
-
-for parquet_file in SRC.rglob("*.parquet"):
-    relative = parquet_file.relative_to(SRC)
-    remote = f"{VOLUME}/{relative}"
-    upload_with_retry(parquet_file, remote)
-```
+File: `04_databricks/02_data_export/02_upload_parquet_to_databricks_volume.py`
 
 Run:
-
 ```bash
-python src/03_bronze_ingestion/03_bronze_ingest_from_parquet.py
-# ✓ 53 files uploaded
-# Time: ~8-12 min on 100Mbps uplink
+python 04_databricks/02_data_export/02_upload_parquet_to_databricks_volume.py
+# ✓ 53 files uploaded, ~8-12 min on 100Mbps
 ```
 
 ### 5.3 Method B: CLI Bulk Copy (Fastest)
 
 ```bash
-# Ensure OAuth login done
 databricks auth login --host https://dbc-a6423fd6-0d52.cloud.databricks.com
-
-# Bulk recursive copy
 databricks fs cp ./data/parquet_export/* /Volumes/workspace/retail/raw_postgres_export/ --overwrite --recursive
-
-# With verbose
-databricks fs cp ./data/parquet_export/ /Volumes/workspace/retail/raw_postgres_export/ --recursive --overwrite -v
 ```
-
-**Upload Time Estimates:**
-
-| Connection | Size | Time | Method |
-| :--- | :--- | :--- | :--- |
-| 50 Mbps | 1.93 GB | 12-15 min | CLI |
-| 100 Mbps | 1.93 GB | 7-10 min | CLI |
-| 200 Mbps | 1.93 GB | 4-6 min | CLI |
-| Any | 1.93 GB | 8-12 min | SDK + retry (slower but resilient) |
 
 ### 5.4 Validation After Upload
 
-**1. LIST volume (SQL):**
-
 ```sql
 LIST '/Volumes/workspace/retail/raw_postgres_export/';
-LIST '/Volumes/workspace/retail/raw_postgres_export/invoices/';
--- Should show 11 files
+-- Should show 53 files or 5 folders depending on structure
 
 SELECT COUNT(*) as file_count FROM (
   LIST '/Volumes/workspace/retail/raw_postgres_export/**'
@@ -377,58 +282,108 @@ SELECT COUNT(*) as file_count FROM (
 -- Expected: 53
 ```
 
-**2. Read test with Spark:**
+---
 
+## 6. Bronze Ingestion - Incremental Load - FIXED v2 (NEW)
+
+### 6.1 Problem with Old Ingestion
+
+Old `03_bronze_ingest_from_parquet.py`:
+- Did `count()` before write = double scan (10M rows for invoices_part_0000 = 2x scan = OOM)
+- Compared file_path exactly (`/Volumes/...` vs `dbfs:/Volumes/...`) = path format mismatch = invoice_items reloaded even though already LOADED
+- Used `PARTITIONED BY (invoice_date)` in DDL = tried to create 1000 partitions for 1 file = hang on Free Edition
+
+### 6.2 Fixed Loader - 05_bronze_loading_process.py
+
+**File:** `04_databricks/03_bronze_ingestion/05_bronze_loading_process.py` - Type: `.py` Databricks Notebook - Called by Jobs
+
+**Requirements Implemented:**
+- **Incremental**: file already loaded for a table = SKIP
+- **If file loaded on some tables but not on others -> load on missing table** - tracked by `(file_name, table_name)` AND `(file_path, table_name)` robustly
+- **As-is**: keep nulls, errors, no transforms, allow duplicates
+- **One script for all tables**: maps `stores.parquet` -> `bronze_stores`, `products.parquet` -> `bronze_products`, `customers.parquet` -> `bronze_customers`, `invoices_part_*.parquet` -> `bronze_invoices`, `invoice_items*.parquet` -> `bronze_invoice_items`
+- **Optimized**: No `count()` before write - single scan. Row count logged as -1 for speed
+- **Metadata**: adds `_source_file_name`, `_source_file_path`, `_ingest_timestamp`, `_update_timestamp`, `_bronze_load_id`
+
+**Key Fix Code:**
 ```python
-df = spark.read.format("parquet").load("/Volumes/workspace/retail/raw_postgres_export/invoices/")
-print(f"Rows: {df.count():,}")  # 55,000,000
-df.printSchema()
+def get_loaded_set():
+    rows = spark.sql(f"SELECT file_name, file_path, table_name FROM {CONTROL_TABLE} WHERE status = 'LOADED'").collect()
+    by_name = set((r.file_name, r.table_name) for r in rows)  # Robust: file name + table
+    by_path = set((r.file_path.rstrip("/").lower(), r.table_name) for r in rows)
+    return by_name, by_path
 
-# All tables
-for tbl in ["stores", "products", "customers", "invoices", "invoice_items"]:
-    cnt = spark.read.parquet(f"/Volumes/workspace/retail/raw_postgres_export/{tbl}/").count()
-    print(f"{tbl}: {cnt:,}")
+def is_already_loaded(file_path, table_name, by_name_set, by_path_set):
+    file_name = file_path.split("/")[-1]
+    if (file_name, table_name) in by_name_set:  # Catches invoice_items even if path format changed
+        return True
+    if (file_path.rstrip("/").lower(), table_name) in by_path_set:
+        return True
+    return False
 ```
 
-**3. Python SDK validation:**
+**Job Parameters:**
+```
+volume_path = /Volumes/workspace/retail/raw_postgres_export/
+job_run_id = {{job.run_id}}
+force_reload = false
+```
 
-```python
-files = list(w.files.list_directory_contents("/Volumes/workspace/retail/raw_postgres_export/"))
-assert len(files) == 5 # 5 folders
+**Expected Run:**
+```
+Found 53 files
+Control log has 2 LOADED entries (customers, invoice_items)
+⏭️ SKIP - Already LOADED: customers.parquet -> bronze_customers
+⏭️ SKIP - Already LOADED: invoice_items.parquet -> bronze_invoice_items
+📥 Loading: invoices_part_0000.parquet -> bronze_invoices (5M rows, ~2-3 min)
+✅ LOADED invoices_part_0000.parquet -> bronze_invoices in 142.3s
+Done - New: 11, Skipped: 42, Failed: 0
+```
+
+### 6.3 Control Queries
+
+**File:** `06_bronze_control_queries.sql`
+
+```sql
+-- File vs log check
+SELECT file_name, table_name, status FROM workspace.retail.bronze_file_log WHERE status = 'LOADED';
+
+-- Row counts vs expected
+SELECT 'bronze_stores' as tbl, COUNT(*) FROM workspace.retail.bronze_stores -- 50
+UNION ALL SELECT 'bronze_products', COUNT(*) FROM workspace.retail.bronze_products -- 2500
+UNION ALL SELECT 'bronze_customers', COUNT(*) FROM workspace.retail.bronze_customers -- 100k
+UNION ALL SELECT 'bronze_invoices', COUNT(*) FROM workspace.retail.bronze_invoices -- 55M
+UNION ALL SELECT 'bronze_invoice_items', COUNT(*) FROM workspace.retail.bronze_invoice_items; -- ~200M
+
+-- Metadata not null
+SELECT COUNT(*) FROM workspace.retail.bronze_invoices WHERE _source_file_name IS NULL; -- 0 expected
+
+-- Check no reload
+SELECT file_name, table_name, COUNT(*) as cnt FROM workspace.retail.bronze_file_log WHERE status='LOADED' GROUP BY file_name, table_name HAVING cnt > 1; -- 0 expected
+```
+
+### 6.4 Single File Fast Path (if invoices_part_0000 hangs)
+
+If loader still hangs, use COPY INTO for single file - bypass driver:
+
+```sql
+COPY INTO workspace.retail.bronze_invoices
+FROM (
+  SELECT *,
+    _metadata.file_name as _source_file_name,
+    _metadata.file_path as _source_file_path,
+    current_timestamp() as _ingest_timestamp,
+    current_timestamp() as _update_timestamp,
+    'fix_invoices' as _bronze_load_id
+  FROM '/Volumes/workspace/retail/raw_postgres_export/invoices_part_0000.parquet'
+)
+FILEFORMAT = PARQUET
+FORMAT_OPTIONS ('mergeSchema'='true');
 ```
 
 ---
 
-## 6. Next Steps - Bronze Ingestion
-
-Once Parquet files are in the Volume:
-
-1.  **Create Bronze Delta tables** with audit columns:
-    ```sql
-    CREATE TABLE IF NOT EXISTS workspace.retail.bronze_invoices
-    USING DELTA
-    AS SELECT *, current_timestamp() as _ingest_timestamp, input_file_name() as _source_file
-       FROM parquet.`/Volumes/workspace/retail/raw_postgres_export/invoices/`;
-    ```
-
-2.  **Auto Loader alternative** (for incremental):
-    ```python
-    (spark.readStream.format("cloudFiles")
-      .option("cloudFiles.format", "parquet")
-      .load("/Volumes/workspace/retail/raw_postgres_export/invoices/")
-      .writeStream.format("delta")
-      .option("checkpointLocation", "/Volumes/workspace/retail/_checkpoints/bronze_invoices/")
-      .start("workspace.retail.bronze_invoices")
-    )
-    ```
-
-3.  **Data quality checks:** Row counts match Postgres, no null PKs, file mod time < 24h.
-
-See `02_bronze_ingestion.md` for full Bronze DDL.
-
----
-
-## 7. Validation Checklist
+## 7. Validation Checklist - UPDATED
 
 Before marking M4 complete, verify:
 
@@ -437,17 +392,23 @@ Before marking M4 complete, verify:
 - [ ] New CLI installed: `databricks --version` >= 0.213.0
 - [ ] Auth is OAuth, not PAT: `databricks auth profiles` shows OAuth
 - [ ] No `DATABRICKS_TOKEN` env var set: `env | grep DATABRICKS` empty
-- [ ] Volume exists: `LIST '/Volumes/workspace/retail/raw_postgres_export/'` returns 5 folders
-- [ ] Volume type is MANAGED (enum fix applied)
-- [ ] Upload method succeeded: 53 files in Volume (LIST recursive count)
+- [ ] Volume exists: `LIST '/Volumes/workspace/retail/raw_postgres_export/'` returns files
+- [ ] Volume type is MANAGED
+- [ ] Upload succeeded: 53 files in Volume
+- [ ] DDL executed: `04_bronze_ddl.sql` created 5 bronze tables + bronze_file_log, NO PARTITIONED BY
+- [ ] Bronze loader is FIXED v2: checks by file_name+table_name, not just file_path
+- [ ] Incremental check: Re-running `05_bronze_loading_process.py` skips already loaded files - no reload of invoice_items
 - [ ] Spark can read: `spark.read.parquet("/Volumes/workspace/retail/raw_postgres_export/invoices/").count() == 55M`
-- [ ] No `bash: .venv/bin/databricks No such file` error (hash -r applied if needed)
+- [ ] Control queries pass: row counts match expected, no duplicates in file_log
 - [ ] Documentation updated: this file committed to `/docs/04_databricks_bronze.md`
 
-**If any check fails:** Re-run relevant section. Most common is PAT still set - `unset DATABRICKS_TOKEN`.
+**If any check fails:**
+- PAT still set -> `unset DATABRICKS_TOKEN`
+- invoices_part_0000 hangs -> Drop and recreate bronze_invoices WITHOUT PARTITIONED BY, then use COPY INTO
+- invoice_items reloads -> Use fixed v2 loader that checks by file_name + table_name
 
 ---
 
 *Author: Data Engineering Portfolio - M4 Medallion Project*  
 *Workspace: dbc-a6423fd6-0d52.cloud.databricks.com (Free Edition)*  
-*Date: 2025*
+*Date: 2025-10 - Fixed v2*
