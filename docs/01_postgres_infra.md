@@ -1,46 +1,86 @@
-# Postgres OLTP - retail_raw as Dirty Landing (Bronze)
+# PostgreSQL Source System — Permissive `retail_raw` Schema
 
-#### Design Principle: Permissive Landing
-`retail_raw` is NOT a clean OLTP. It's a raw landing zone that mimics real source system errors.
-All cleaning is deferred to Databricks Silver.
+## 1. Purpose
 
-To allow 1-2% error injection, this schema has:
-- No PRIMARY KEY on business keys, only `raw_id BIGSERIAL` as technical row id
-- No FOREIGN KEY constraints (allows orphan invoice_items, invalid store_id)
-- No CHECK constraints (allows invalid region, payment_method, negative qty)
-- All business columns nullable and mostly VARCHAR (allows 'abc', '$-10', '2025-13-40')
+PostgreSQL represents the **simulated operational source system** for the US retail platform.
 
-#### Tables
-- stores: raw_id PK, store_id INT nullable duplicate allowed
-- products: raw_id PK, unit_price VARCHAR(50) to allow invalid price formats
-- customers: raw_id PK, join_date VARCHAR to allow invalid dates
-- invoices: raw_id PK, invoice_date VARCHAR, store_id no FK
-- invoice_items: raw_id PK, invoice_id no FK, quantity VARCHAR
+The purpose of this layer is not to provide clean analytical data. Instead, it intentionally contains realistic data-quality issues that will be detected and handled later in the Medallion architecture.
 
-#### Why raw_id?
-If invoice_id is PK, we cannot load duplicate invoice_id errors. With raw_id as PK, the same invoice_id can appear twice with two different raw_id, and we can detect duplicate in Silver with `ROW_NUMBER() OVER (PARTITION BY invoice_id)`.
+The processing flow is:
 
-#### Verification of dirty model
-```sql
-\d retail_raw.stores -- should show no FK, no CHECK
-SELECT * FROM retail_raw.invoices WHERE store_id NOT IN (SELECT store_id FROM retail_raw.stores);
--- should be possible, will return orphans# Postgres OLTP Design - US Retail
+```text
+Synthetic Data
+      ↓
+PostgreSQL Source System
+      ↓
+Parquet Extraction
+      ↓
+Databricks RAW
+      ↓
+Bronze
+      ↓
+Silver + Quarantine
+      ↓
+Gold
+```
 
-#### Model - 3NF Normalized
-- stores (50 rows, US Census Regions: Northeast, Midwest, South, West)
-- products (2,500 SKUs, categories: Grocery, Produce, Dairy, Meat, Beverages, Household)
-- customers (100k, loyalty tiers)
-- invoices (250k, FK to stores, nullable FK to customers for guest checkout)
-- invoice_items (1M, FK to invoices and products)
+The PostgreSQL source must therefore preserve the characteristics of the generated source data, including intentionally invalid or incomplete records.
 
-#### Key Constraints
-- CHECK region IN (...)
-- CHECK payment_method IN ('Cash','Credit Card','Debit Card','EBT','Mobile Pay')
-- CHECK quantity <> 0, unit_price >=0
-- Indexes on invoice_date, store_id for future incremental loads
+---
 
-#### Why Docker Volume for init.sql
-./01_infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql ensures infra is reproducible. Any clone can rebuild DB with one command.
+## 2. Design Principle — Permissive Source Schema
 
-#### Verification
-psql -h localhost -U retail_admin -d retail_db -c "\dt retail_raw.*"
+The `retail_raw` schema is intentionally permissive.
+
+Business validation and data-quality correction are **not performed in PostgreSQL**.
+
+The source schema therefore avoids database constraints that would reject the intentionally generated erroneous records.
+
+### Design decisions
+
+* No primary keys on business identifiers.
+* No foreign keys between business entities.
+* No `CHECK` constraints enforcing business rules.
+* Business columns are nullable where the source data may contain missing values.
+* Several business attributes are stored using permissive types such as `VARCHAR`.
+* A technical `raw_id BIGSERIAL` is used as the physical primary key.
+
+This allows the source system to contain situations such as:
+
+* Missing customer identifiers.
+* Invalid product references.
+* Missing dates.
+* Missing payment methods.
+* Duplicate business identifiers.
+* Invalid or incomplete line-item information.
+
+These conditions are expected to survive the extraction process and be detected during the Silver-layer data-quality process.
+
+---
+
+## 3. Tables
+
+The current source model contains the following tables:
+
+### `stores`
+
+Stores the generated store master data.
+
+```text
+raw_id     BIGSERIAL PRIMARY KEY
+store_id   INT
+```
+
+The `store_id` is a business identifier and is therefore allowed to contain duplicates or invalid values.
+
+### `products`
+
+Stores the generated product master data.
+
+```text
+raw_id       BIGSERIAL PRIMARY KEY
+product_id   ...
+unit_price   VARCHAR(50)
+```
+
+`unit_price` is intentionally permissive so that source values can be preserved without P_
