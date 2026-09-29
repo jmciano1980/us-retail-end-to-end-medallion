@@ -1,159 +1,175 @@
 # US Retail End-to-End Data Engineering Platform
 
-An end-to-end data engineering portfolio project simulating a large US retail company, from an operational PostgreSQL source system through a Medallion architecture in Databricks and ultimately to Power BI analytical and data-quality dashboards.
+An end-to-end data engineering portfolio project simulating a large US retail company, from an operational PostgreSQL source system through a Medallion architecture in Databricks and ultimately to Power BI analytical dashboards.
 
-The project is designed to demonstrate practical data engineering and solution architecture skills, including:
+The project is designed to demonstrate practical data engineering skills including:
 
-* Synthetic data generation at scale
-* Relational database design
-* Batch data extraction
-* Parquet-based data ingestion
-* Databricks / Apache Spark / Delta Lake
-* Medallion architecture
-* Data quality and error management
-* Data cleansing and transformation
-* Data quarantine
-* Dimensional modeling
-* Slowly Changing Dimensions (SCD Type 2)
-* Analytical data modeling
-* Power BI
-* Data lineage and reconciliation
+- Data generation at scale
+- Relational database design
+- Batch data extraction
+- Parquet-based source transport
+- Databricks / Delta Lake
+- Medallion architecture
+- Data quality and error management
+- Data cleansing and transformation
+- Dimensional modeling
+- SCD Type 2
+- Analytical data modeling
+- Power BI
+- Data lineage and reconciliation
+- Incremental file ingestion
 
-The project deliberately introduces approximately **1% of erroneous or incomplete source data** to demonstrate how a modern data platform can preserve, identify, quarantine, correct, and report data-quality issues.
+The project deliberately introduces erroneous or incomplete source data in order to demonstrate how a modern data platform can identify, quarantine, correct, and report data-quality issues.
 
 ---
 
-# 1. Project Status
+## Project Status
 
 The project is being developed incrementally.
 
-| Phase | Description                        | Status      |
-| ----- | ---------------------------------- | ----------- |
-| M1    | Infrastructure / PostgreSQL        | ✅ Completed |
-| M2    | Synthetic data generation          | ✅ Completed |
-| M3    | PostgreSQL source loading          | ✅ Completed |
-| M4    | PostgreSQL → Parquet extraction    | 🔜 Next     |
-| M5    | Databricks RAW / Bronze            | ⬜ Planned   |
-| M6    | Silver / Data Quality / Quarantine | ⬜ Planned   |
-| M7    | Gold analytical model              | ⬜ Planned   |
-| M8    | Power BI dashboards                | ⬜ Planned   |
+### Current status
 
-The current repository intentionally stops after the synthetic data has been generated and loaded into PostgreSQL.
+| Phase | Description | Status |
+|---|---|---|
+| M1 | Infrastructure / PostgreSQL | ✅ Completed |
+| M2 | Synthetic data generation | ✅ Completed |
+| M3 | PostgreSQL source loading | ✅ Completed |
+| M4 | PostgreSQL → Parquet extraction | ✅ Completed |
+| M5 | Parquet → Databricks RAW upload | ✅ Completed |
+| M6 | Databricks RAW / Bronze ingestion | ⬜ Planned |
+| M7 | Silver / Data Quality / Quarantine | ⬜ Planned |
+| M8 | Gold analytical model | ⬜ Planned |
+| M9 | Power BI dashboards | ⬜ Planned |
+| M10 | Final documentation | ⬜ Planned |
 
-The downstream extraction, Databricks, data-quality, analytical, and BI layers will be rebuilt from this point.
+The PostgreSQL source extraction into dated Parquet files is complete.
 
----
-
-# 2. Business Scenario
-
-The project simulates the data platform of a US retail company operating:
-
-* **50 stores**
-* **2,500 products**
-* **100,000 customers**
-* Approximately **55 million invoices**
-* Approximately **200 million invoice line items**
-
-The source data is synthetic and intentionally contains both valid and erroneous records.
-
-Examples of intentional data-quality problems include:
-
-* NULL customer references
-* NULL monetary values
-* Invalid quantities
-* Invalid discounts
-* Invalid product references
-* Referential integrity problems
-* Duplicate business identifiers
-* Other incomplete or inconsistent records
-
-These errors are intentional and form an important part of the project.
-
-The objective is **not** to remove or correct these problems during source ingestion.
-
-Instead, the architecture preserves the source data and handles business-data-quality problems downstream, primarily in the Silver layer.
-
----
-
-# 3. High-Level Architecture
-
-The final architecture will follow a Medallion design:
+The current implementation boundary is now:
 
 ```text
-                    ┌─────────────────────┐
-                    │ Python Data         │
-                    │ Generation          │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ CSV Source Data     │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ PostgreSQL          │
-                    │ Operational Source   │
-                    │ System of Record    │
-                    └──────────┬──────────┘
-                               │
-                         Extraction
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Parquet Files       │
-                    │ Source Extract      │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Databricks RAW      │
-                    │ Immutable Landing   │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Databricks BRONZE   │
-                    │ Structured Source   │
-                    └──────────┬──────────┘
-                               │
-                       Data Quality
-                       & Transformation
-                               │
-                 ┌─────────────┴─────────────┐
-                 ▼                           ▼
-        ┌─────────────────┐        ┌─────────────────┐
-        │ SILVER          │        │ QUARANTINE      │
-        │ Clean / Valid   │        │ Invalid Records │
-        │ Conformed Data  │        │ & DQ Details    │
-        └────────┬────────┘        └────────┬────────┘
-                 │                          │
-                 ▼                          ▼
-        ┌─────────────────┐        ┌─────────────────┐
-        │ GOLD            │        │ GOLD DQ         │
-        │ Analytics       │        │ Error Analytics │
-        └────────┬────────┘        └────────┬────────┘
-                 │                          │
-                 └─────────────┬────────────┘
-                               ▼
-                    ┌─────────────────────┐
-                    │ Power BI            │
-                    │ Business & Data     │
-                    │ Quality Dashboards  │
-                    └─────────────────────┘
+PostgreSQL
+    ↓
+Dated Parquet Extraction
+    ↓
+Databricks Unity Catalog Volume
+    ↓
+RAW
 ```
 
 ---
 
-# 4. Layer Responsibilities
+# 1. Business Scenario
 
-## PostgreSQL — Operational Source System
+The project simulates the data platform of a US retail company operating:
 
-PostgreSQL represents the simulated operational source system.
+- **50 stores**
+- **2,500 products**
+- **100,000 customers**
+- Approximately **55 million invoice transactions**
+- Multiple invoice line items per transaction
 
-It contains the generated source data, including intentionally introduced data-quality problems.
+The simulated source system contains both valid and intentionally erroneous data.
 
-Typical source tables are:
+Examples include:
+
+- NULL customer references
+- NULL monetary values
+- Invalid quantities
+- Invalid discounts
+- Referential-integrity problems
+- Other incomplete or inconsistent records
+
+These errors are intentional and form an important part of the project.
+
+The goal is **not** to remove those errors during extraction or RAW ingestion.
+
+---
+
+# 2. Architecture
+
+```text
+                     ┌─────────────────────┐
+                     │ Python Data         │
+                     │ Generation          │
+                     └──────────┬──────────┘
+                                │
+                                ▼
+                     ┌─────────────────────┐
+                     │ CSV Source Data     │
+                     └──────────┬──────────┘
+                                │
+                                ▼
+                     ┌─────────────────────┐
+                     │ PostgreSQL          │
+                     │ Operational Source  │
+                     │ / System of Record  │
+                     └──────────┬──────────┘
+                                │
+                         M4 Extraction
+                                │
+                                ▼
+                     ┌─────────────────────┐
+                     │ Parquet Files       │
+                     │ Source Extract      │
+                     │ Dated / Immutable   │
+                     └──────────┬──────────┘
+                                │
+                         M5 Upload
+                                │
+                                ▼
+                     ┌─────────────────────┐
+                     │ Databricks RAW      │
+                     │ Unity Catalog       │
+                     │ Volume / Landing    │
+                     └──────────┬──────────┘
+                                │
+                         Incremental
+                          ingestion
+                                │
+                                ▼
+                     ┌─────────────────────┐
+                     │ Databricks BRONZE   │
+                     │ Structured Source   │
+                     └──────────┬──────────┘
+                                │
+                         Data Quality
+                         & Transformation
+                                │
+                  ┌─────────────┴─────────────┐
+                  ▼                           ▼
+         ┌─────────────────┐        ┌─────────────────┐
+         │ SILVER          │        │ QUARANTINE      │
+         │ Clean / Valid   │        │ Invalid Records │
+         │ Conformed Data  │        │ & DQ Details    │
+         └────────┬────────┘        └────────┬────────┘
+                  │                          │
+                  ▼                          ▼
+         ┌─────────────────┐        ┌─────────────────┐
+         │ GOLD            │        │ GOLD DQ         │
+         │ Analytics       │        │ Error Metrics   │
+         └────────┬────────┘        └────────┬────────┘
+                  │                          │
+                  └─────────────┬────────────┘
+                                ▼
+                     ┌─────────────────────┐
+                     │ Power BI            │
+                     │ Analytical &        │
+                     │ Data Quality        │
+                     │ Dashboards          │
+                     └─────────────────────┘
+```
+
+---
+
+# 3. Layer Responsibilities
+
+## PostgreSQL — Source System
+
+PostgreSQL represents the operational retail database.
+
+It is the simulated **System of Record**.
+
+Source tables include:
 
 ```text
 stores
@@ -163,180 +179,125 @@ invoices
 invoice_items
 ```
 
-The PostgreSQL schema is intentionally permissive.
-
-Business validation is not performed at this stage because the downstream pipeline must be able to detect and handle source-system errors.
+The source is intentionally imperfect.
 
 ---
 
 ## Parquet — Source Extraction
 
-PostgreSQL will be extracted into Parquet files.
+PostgreSQL is extracted into Parquet files.
 
-Parquet is an **extraction and transport format**, not a transformation layer.
+Parquet is an **extraction/transport format**, not a transformation layer.
 
-The extraction process must preserve the source data:
+The extraction process preserves the source condition:
 
-* NULL values remain NULL
-* Invalid values remain invalid
-* Referential problems remain present
-* No business rules are applied
-* No records are intentionally removed
+- NULL values remain NULL
+- Invalid values remain invalid
+- Referential problems remain present
+- No business rules are applied
+- No intentional record removal
+- No deduplication
 
-The extraction process will also implement technical controls such as:
+Technical controls include:
 
-* Batch processing
-* Keyset pagination where appropriate
-* Row-count reconciliation
-* Source-to-file reconciliation
-* Extraction metadata
-* Protection against skipped records
-* Protection against duplicated records
+- Consistent database snapshot
+- Batch processing
+- Pagination/read control appropriate to the source
+- Row-count reconciliation
+- Extraction metadata
+- Protection against skipped or duplicated records
+
+### Extraction filename contract
+
+Every Parquet file contains the source table and extraction date:
+
+```text
+<table>_<YYYY_MM_DD>_part-<NNNNN>.parquet
+```
+
+Example:
+
+```text
+invoice_items_2026_09_29_part-00180.parquet
+```
+
+The extraction date is part of the file identity.
+
+A later execution therefore creates a new file identity:
+
+```text
+invoice_items_2026_09_30_part-00180.parquet
+```
+
+This is important for downstream incremental file discovery.
 
 ---
 
-# 5. RAW Layer
+## RAW — Databricks Landing
 
-The RAW layer represents the immutable landing zone in Databricks.
+RAW represents the immutable landing zone in Databricks.
 
-Its purpose is:
+The purpose of RAW is:
 
-> **Preserve what arrived from the source system.**
+> Preserve what arrived from the source system.
 
-RAW should therefore contain the extracted source data with minimal processing.
+The M5 uploader copies the M4 Parquet files to a Unity Catalog Volume without renaming or transforming them.
 
-No business-data corrections are performed in RAW.
+RAW should therefore contain the source data with minimal processing.
 
-For example:
-
-```text
-PostgreSQL
-customer_id = NULL
-       ↓
-Parquet
-customer_id = NULL
-       ↓
-RAW
-customer_id = NULL
-```
-
-Technical metadata may be added, such as:
+Technical metadata may be stored separately under:
 
 ```text
-_ingestion_timestamp
-_source_file
-_extraction_batch_id
+_metadata/
 ```
+
+Business-data corrections do not belong in RAW.
 
 ---
 
-# 6. Bronze Layer
+## Bronze Layer
 
 Bronze provides a structured Delta representation of the source data.
 
-The Bronze layer preserves the business content of RAW while establishing a consistent technical schema.
-
 Typical Bronze responsibilities include:
 
-* Schema enforcement
-* Data type standardization
-* Column naming conventions
-* Ingestion metadata
-* Source lineage
-* Technical reconciliation
+- Schema enforcement
+- Data type standardization
+- Column naming conventions
+- Ingestion metadata
+- Source lineage
+- Technical reconciliation
 
-Bronze does **not** correct business-data-quality problems.
-
-For example:
-
-```text
-PostgreSQL
-quantity = -3
-       ↓
-Parquet
-quantity = -3
-       ↓
-RAW
-quantity = -3
-       ↓
-BRONZE
-quantity = -3
-```
-
-The correction or rejection decision belongs to Silver.
+Bronze does not correct business-data-quality problems.
 
 ---
 
-# 7. Silver Layer
+## Silver Layer
 
-Silver is where business-data-quality validation and transformation occur.
+Silver is where data quality and business transformation will occur.
 
-Bronze data will be evaluated against defined data-quality rules.
+The Bronze data will be evaluated against defined data-quality rules.
 
 Valid records will be transformed into clean, conformed Silver datasets.
 
 Invalid records will be routed to quarantine structures.
 
-```text
-                    BRONZE
-                       │
-              Data Quality Rules
-                       │
-             ┌─────────┴─────────┐
-             │                   │
-             ▼                   ▼
-          VALID               INVALID
-             │                   │
-             ▼                   ▼
-          SILVER             QUARANTINE
-```
-
 Potential data-quality categories include:
 
-* Missing values
-* Invalid formats
-* Invalid business values
-* Referential integrity errors
-* Duplicate records
-* Business-rule violations
-
-Each quarantined record should retain enough information to understand why it was rejected.
-
-Example quarantine attributes:
-
-```text
-invoice_id
-line_item
-error_category
-error_code
-error_description
-source_table
-source_file
-extraction_batch_id
-quarantine_timestamp
-```
-
-This allows the project to demonstrate both data cleansing and data-quality management.
+- Missing values
+- Invalid formats
+- Invalid business values
+- Referential-integrity errors
+- Duplicate records
+- Business-rule violations
 
 ---
 
-# 8. Gold Layer
+## Gold Layer
 
 The Gold layer will provide business-oriented analytical datasets.
 
-The main analytical model will follow a dimensional/star-schema approach.
-
-Expected structure:
-
-```text
-                  dim_date
-                     │
-                     │
-dim_store ───── fact_sales ───── dim_product
-                     │
-                     │
-                dim_customer
-```
+The main analytical model is expected to follow a dimensional/star-schema design.
 
 Potential Gold tables include:
 
@@ -352,135 +313,267 @@ The main fact table will use **invoice line item** as its grain.
 
 Potential measures include:
 
-* Sales
-* Quantity
-* Discount
-* Cost
-* Gross Profit
-* Gross Margin
-* Transaction Count
-* Average Basket Value
+- Sales
+- Quantity
+- Discount
+- Cost
+- Gross Profit
+- Gross Margin
+- Transaction Count
+- Average Basket Value
 
-SCD Type 2 will be implemented where the source data and business model support meaningful historical changes.
+SCD Type 2 will be implemented where the source data supports meaningful historical changes.
 
 ---
 
-# 9. Data Quality / Error Analytics
+# 4. M4 — PostgreSQL → Parquet
 
-A key objective of the project is to make data quality measurable instead of simply hiding invalid records.
+M4 is complete.
+
+The extractor is located at:
+
+```text
+04_extraction/export_postgres_to_parquet.py
+```
+
+Default output:
+
+```text
+data/parquet_export/
+```
+
+Example:
+
+```text
+data/parquet_export/
+├── customers_2026_09_29_part-00001.parquet
+├── customers_2026_09_29_part-00002.parquet
+├── invoice_items_2026_09_29_part-00001.parquet
+├── invoices_2026_09_29_part-00001.parquet
+├── products_2026_09_29_part-00001.parquet
+├── stores_2026_09_29_part-00001.parquet
+├── customers_2026_09_29_extraction_manifest.json
+└── _extraction_run_manifest_2026_09_29.json
+```
+
+Run all source tables:
+
+```bash
+python 04_extraction/export_postgres_to_parquet.py --all
+```
+
+The extraction date is generated automatically by the extractor.
+
+---
+
+# 5. M5 — Parquet → Databricks RAW
+
+M5 is the local-to-Databricks delivery boundary.
+
+The uploader is located at:
+
+```text
+05_databricks/raw/upload_parquet_to_databricks.py
+```
+
+Default local source:
+
+```text
+data/parquet_export/
+```
+
+Default Databricks target:
+
+```text
+/Volumes/workspace/retail/raw
+```
+
+The target Volume name is configurable and must match the Volume actually created in the Databricks workspace.
+
+The uploader:
+
+- Preserves original Parquet filenames
+- Uploads Parquet without business transformation
+- Does not overwrite existing files by default
+- Supports explicit `--overwrite`
+- Supports date-scoped uploads
+- Supports a dry-run mode
+- Can upload M4 JSON manifests separately under `_metadata`
+
+Example:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py
+```
+
+Dry run:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py \
+  --dry-run
+```
+
+Specific extraction date:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py \
+  --extraction-date 2026_09_29
+```
+
+Include technical manifests:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py \
+  --include-manifests
+```
+
+The intended scheduled chain is:
+
+```text
+PostgreSQL
+    ↓
+M4 — PostgreSQL → Parquet
+    ↓
+data/parquet_export/
+    ↓
+M5 — Parquet → Databricks Volume
+    ↓
+RAW
+    ↓
+Incremental ingestion
+    ↓
+Bronze
+```
+
+---
+
+# 6. Incremental File Ingestion Strategy
+
+The project is designed so that each extraction produces uniquely identifiable files.
+
+For example:
+
+```text
+customers_2026_09_29_part-00001.parquet
+customers_2026_09_30_part-00001.parquet
+customers_2026_10_01_part-00001.parquet
+```
+
+The uploader preserves these filenames.
+
+This means the Databricks landing area accumulates distinct extraction artifacts instead of repeatedly overwriting the same filename.
+
+The future RAW → Bronze ingestion can therefore discover new files incrementally.
+
+The M5 uploader does not implement the downstream incremental ingestion engine itself.
+
+That responsibility belongs to the next Databricks implementation step.
+
+---
+
+# 7. Data Quality / Error Analytics
+
+One of the goals of the project is to make data quality measurable rather than simply hiding invalid records.
 
 Quarantined data will eventually feed a dedicated analytical model.
 
-This model will support a **Data Quality / Error Correction dashboard** in Power BI.
-
 Potential metrics include:
 
-* Total records processed
-* Valid records
-* Invalid records
-* Acceptance percentage
-* Error percentage
-* Errors by type
-* Errors by source table
-* Errors by store
-* Errors by state
-* Error trends over time
-* Most frequent violated data-quality rules
-
-The final numbers will depend on the generated dataset and the validation rules implemented in Silver.
+- Total records processed
+- Valid records
+- Invalid records
+- Acceptance percentage
+- Error percentage
+- Errors by type
+- Errors by source table
+- Errors by store
+- Errors by state
+- Error trends over time
+- Most frequent data-quality rules violated
 
 ---
 
-# 10. Power BI
+# 8. Power BI
 
-Power BI will consume the Gold analytical models and the Gold data-quality model.
+Power BI will consume the Gold layer.
 
-Expected dashboards include:
+The final project is expected to contain:
 
 ### Executive Dashboard
 
-Potential KPIs:
-
-* Revenue
-* Gross Profit
-* Transactions
-* Average Basket Value
-* Sales Growth
-* Gross Margin
+- Revenue
+- Gross Profit
+- Transactions
+- Average Basket Value
+- Sales Growth
+- Gross Margin
 
 ### Store / Regional Dashboard
 
-Potential analysis:
-
-* Sales by region
-* Sales by state
-* Store performance
-* Transaction volume
-* Average basket
-* Margin
+- Sales by region
+- Sales by state
+- Store performance
+- Transaction volume
+- Average basket
+- Margin
 
 ### Product Dashboard
 
-Potential analysis:
-
-* Sales by category
-* Sales by subcategory
-* Brand performance
-* Product profitability
-* Quantity sold
-* Discount impact
+- Sales by category
+- Sales by subcategory
+- Brand performance
+- Product profitability
+- Quantity sold
+- Discount impact
 
 ### Data Quality Dashboard
 
-Potential analysis:
-
-* Error rate
-* Quarantined records
-* Errors by category
-* Errors by rule
-* Errors by source table
-* Errors by store
-* Error trends
+- Error rate
+- Quarantined records
+- Errors by category
+- Errors by rule
+- Errors by source table
+- Errors by store
+- Error trends
 
 ---
 
-# 11. Technology Stack
+# 9. Technology Stack
 
-## Data Generation
+### Data Generation
 
-* Python
-* Faker
-* Python standard libraries
+- Python
+- Faker
+- Pandas / Python standard libraries
 
-## Source Database
+### Source Database
 
-* PostgreSQL
-* Docker
-* Ubuntu / WSL2
+- PostgreSQL
+- Docker
+- Ubuntu / WSL2
 
-## Data Lake / Processing
+### Data Lake / Processing
 
-* Databricks
-* Apache Spark / PySpark
-* Delta Lake
-* Parquet
+- Databricks Free Edition
+- Unity Catalog
+- Unity Catalog Volumes
+- Apache Spark / PySpark
+- Delta Lake
+- Parquet
+- Databricks SDK for Python
 
-## Analytics
+### Analytics
 
-* Power BI
+- Power BI
 
-## Development / Version Control
+### Development / Version Control
 
-* Git
-* GitHub
-* VS Code
-* DBeaver
+- Git
+- GitHub
 
 ---
 
-# 12. Repository Structure
-
-The repository is organized according to the development stages of the platform.
+# 10. Repository Structure
 
 ```text
 us-retail-end-to-end-medallion/
@@ -489,166 +582,302 @@ us-retail-end-to-end-medallion/
 │   └── postgres/
 │
 ├── 02_data_gen/
-│   └── generate_retail_data.py
-│
-├── 03_source/
 │   └── ...
+│
+├── 03_raw_layer/
+│   └── ...
+│
+├── 04_extraction/
+│   └── export_postgres_to_parquet.py
+│
+├── 05_databricks/
+│   └── raw/
+│       └── upload_parquet_to_databricks.py
 │
 ├── data/
-│   └── samples/
+│   └── parquet_export/
 │
 ├── docs/
-│   └── ...
+│   ├── ...
+│   ├── 05_export_to_parquet.md
+│   └── 06_upload_to_databricks.md
 │
 ├── docker-compose.yml
-├── .env.example
 ├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
 
-The repository is intentionally being developed incrementally.
-
-Future stages such as Parquet extraction, Databricks processing, Gold modeling, and Power BI will be added as the project progresses.
-
 ---
 
-# 13. Development Roadmap
+# 11. M5 Validation
+
+The M5 local-to-Databricks upload path has been validated.
+
+Confirmed Databricks Unity Catalog hierarchy:
+
+```text
+workspace
+└── retail
+    └── Volumes
+        └── raw
+```
+
+Validated Volume path:
+
+```text
+/Volumes/workspace/retail/raw
+```
+
+Authentication is configured through the Databricks CLI/SDK profile:
+
+```text
+retail-dev
+```
+
+The authenticated user was verified with:
+
+```bash
+databricks current-user me --profile retail-dev
+```
+
+The uploader supports controlled testing with:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py \
+  --file customers_2026_09_29_part-00001.parquet
+```
+
+The full upload is:
+
+```bash
+python 05_databricks/raw/upload_parquet_to_databricks.py
+```
+
+The local M4 extraction contained 500 Parquet files during validation.
+
+The resulting architecture is now:
+
+```text
+PostgreSQL
+    ↓
+M4 — dated Parquet extraction
+    ↓
+data/parquet_export/
+    ↓
+M5 — Databricks SDK upload
+    ↓
+/Volumes/workspace/retail/raw
+    ↓
+M6 — incremental RAW → Bronze ingestion
+```
+
+M5 does not transform business data and does not rename the extraction files.
+
+# 12. Development Roadmap
 
 ## Phase 1 — Infrastructure
 
-* [x] Configure WSL2 / Ubuntu
-* [x] Configure Docker
-* [x] Deploy PostgreSQL
-* [x] Configure database initialization
-* [x] Document infrastructure decisions
+- [x] Configure WSL / Ubuntu
+- [x] Configure Docker
+- [x] Deploy PostgreSQL
+- [x] Configure database initialization
 
 ## Phase 2 — Synthetic Data Generation
 
-* [x] Generate stores
-* [x] Generate products
-* [x] Generate customers
-* [x] Generate invoices
-* [x] Generate invoice items
-* [x] Introduce intentional data-quality issues
-* [x] Generate large-scale dataset
-* [x] Commit representative samples
+- [x] Generate stores
+- [x] Generate products
+- [x] Generate customers
+- [x] Generate invoices
+- [x] Generate invoice items
+- [x] Introduce intentional data-quality issues
+- [x] Generate large-scale dataset
 
 ## Phase 3 — PostgreSQL Source
 
-* [x] Create permissive source tables
-* [x] Load generated data
-* [x] Preserve source data-quality issues
-* [x] Validate source data
-* [x] Verify data using database tools
+- [x] Create source tables
+- [x] Load generated data
+- [x] Validate source data
+- [x] Verify data using database tools
 
 ## Phase 4 — PostgreSQL → Parquet
 
-* [ ] Define extraction contract
-* [ ] Implement extraction scripts
-* [ ] Implement batch extraction
-* [ ] Implement correct keyset pagination where required
-* [ ] Generate Parquet files
-* [ ] Reconcile PostgreSQL vs Parquet
-* [ ] Validate row counts
-* [ ] Validate business keys
-* [ ] Document extraction process
+- [x] Design extraction contract
+- [x] Implement extraction script
+- [x] Implement batch extraction
+- [x] Generate Parquet files
+- [x] Reconcile PostgreSQL vs Parquet
+- [x] Generate extraction metadata
+- [x] Document extraction process
+- [x] Implement dated extraction filenames
 
 ## Phase 5 — Databricks RAW / Bronze
 
-* [ ] Define storage structure
-* [ ] Upload Parquet files
-* [ ] Create RAW layer
-* [ ] Create Bronze Delta tables
-* [ ] Add ingestion metadata
-* [ ] Add source lineage
-* [ ] Implement technical reconciliation
-* [ ] Validate RAW vs Bronze
+### M5 — File Delivery
+
+- [x] Define local-to-Databricks upload contract
+- [x] Implement Parquet upload script
+- [x] Preserve M4 filenames
+- [x] Target Unity Catalog Volume
+- [x] Protect existing files from accidental overwrite
+- [x] Support date-scoped uploads
+- [x] Support technical manifest upload
+
+### M6 — Incremental RAW / Bronze ingestion
+
+- [ ] Create Databricks RAW ingestion process
+- [ ] Implement incremental file discovery
+- [ ] Create Bronze Delta tables
+- [ ] Add ingestion metadata
+- [ ] Implement technical reconciliation
+- [ ] Validate RAW vs Bronze
 
 ## Phase 6 — Silver / Data Quality
 
-* [ ] Define data-quality rules
-* [ ] Implement type standardization
-* [ ] Clean valid records
-* [ ] Implement quarantine tables
-* [ ] Classify errors
-* [ ] Implement referential-integrity checks
-* [ ] Implement duplicate detection
-* [ ] Document correction rules
-* [ ] Reconcile Silver vs Bronze
+- [ ] Define data-quality rules
+- [ ] Clean and standardize data
+- [ ] Implement quarantine tables
+- [ ] Classify errors
+- [ ] Implement referential-integrity checks
+- [ ] Implement business-rule validation
+- [ ] Document data-quality framework
 
 ## Phase 7 — Gold
 
-* [ ] Design dimensional model
-* [ ] Create dimensions
-* [ ] Create fact tables
-* [ ] Implement SCD Type 2 where appropriate
-* [ ] Create analytical aggregates
-* [ ] Create Gold data-quality model
-* [ ] Validate Gold against Silver
+- [ ] Design dimensional model
+- [ ] Create dimensions
+- [ ] Create fact tables
+- [ ] Implement SCD Type 2 where appropriate
+- [ ] Create analytical datasets
+- [ ] Create data-quality Gold model
 
 ## Phase 8 — Power BI
 
-* [ ] Connect Power BI to Gold
-* [ ] Build executive dashboard
-* [ ] Build regional/store dashboard
-* [ ] Build product dashboard
-* [ ] Build data-quality dashboard
-* [ ] Validate KPIs
-* [ ] Document semantic model
+- [ ] Build semantic model
+- [ ] Create DAX measures
+- [ ] Build Executive dashboard
+- [ ] Build Store / Regional dashboard
+- [ ] Build Product dashboard
+- [ ] Build Data Quality dashboard
+
+## Phase 9 — Finalization
+
+- [ ] Architecture diagram
+- [ ] Data lineage documentation
+- [ ] Data-quality documentation
+- [ ] Performance documentation
+- [ ] End-to-end testing
+- [ ] Final GitHub cleanup
+- [ ] Portfolio presentation
 
 ---
 
-# 14. Architectural Principles
+# 13. Design Principles
 
-The project follows several explicit architectural principles.
+### Preserve source data
 
-### Source preservation
+The source system contains intentionally imperfect data.
 
-Source data is preserved before business transformation.
+The extraction and RAW layers preserve that data rather than silently correcting it.
 
-### Separation of concerns
+### Separate ingestion from transformation
 
-Each layer has a clearly defined responsibility.
+Extraction and landing are not responsible for business-data cleansing.
 
-### Data quality as a first-class concern
+### Make data quality explicit
 
-Invalid records are not silently discarded.
+Invalid data should be identified, classified, and quarantined rather than silently discarded.
 
-### Traceability
+### Maintain lineage
 
-Records should be traceable from source through the analytical platform.
+It should be possible to understand where a Gold record originated.
 
-### Reconciliation
+### Reconcile every major boundary
 
-Important transitions between layers should be measurable and reconcilable.
+Important ingestion stages should provide evidence that data has not been lost or duplicated.
 
-### Reproducibility
+### Build for scale
 
-Infrastructure and processing should be reproducible through code and configuration.
+The project intentionally operates on tens of millions of records to demonstrate techniques appropriate for larger datasets.
 
-### Business-oriented analytics
+### Prefer explainable architecture
 
-Gold models should expose data in a form that supports real business analysis rather than simply exposing technical source structures.
+Technologies and patterns should be included because they solve a real problem in the architecture.
+
+### Treat extraction files as immutable artifacts
+
+A new extraction should produce a new file identity rather than silently replacing a previously processed file.
 
 ---
 
-# 15. Current Milestone
+# 14. Current Milestone
 
-The project is currently at:
+M4 — PostgreSQL → Parquet extraction is complete.
+
+The current implementation is:
 
 ```text
-M1  Infrastructure             ✅
-M2  Data Generation            ✅
-M3  PostgreSQL Source          ✅
-
-M4  PostgreSQL → Parquet       ← NEXT
-M5  Databricks RAW / Bronze
-M6  Silver / DQ / Quarantine
-M7  Gold
-M8  Power BI
+Python
+  ↓
+CSV
+  ↓
+PostgreSQL
+  ↓
+Dated Parquet Extraction
+  ↓
+M5 — Databricks Upload
+  ↓
+RAW Volume
 ```
 
-The next implementation step is **M4 — PostgreSQL → Parquet extraction**.
+The Parquet filename contract is:
 
-No downstream business transformations should be introduced before the extraction contract and source-preservation rules are established.
+```text
+<table>_<YYYY_MM_DD>_part-<NNNNN>.parquet
+```
+
+Example:
+
+```text
+invoice_items_2026_09_29_part-00180.parquet
+```
+
+M5 preserves this identity when uploading the files to Databricks.
+
+The next implementation boundary is:
+
+```text
+Databricks RAW
+     ↓
+Incremental ingestion
+     ↓
+Bronze Delta
+```
+
+---
+
+# 15. Portfolio Objective
+
+This project is intended as a practical demonstration of data engineering and solution architecture skills.
+
+The objective is to demonstrate the ability to design and implement a complete data platform rather than isolated technologies.
+
+The final solution will cover:
+
+```text
+Source System
+     ↓
+Data Extraction
+     ↓
+Databricks RAW
+     ↓
+Bronze
+     ↓
+Silver + Data Quality
+     ↓
+Gold
+     ↓
+Business Intelligence
+```
+
+The completed project will be suitable as a portfolio project demonstrating data engineering, analytics engineering, and data platform architecture experience.
