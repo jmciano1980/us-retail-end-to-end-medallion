@@ -1,24 +1,8 @@
 # US Retail End-to-End Data Engineering Platform
 
-An end-to-end data engineering portfolio project simulating a large US retail company, from an operational PostgreSQL source system through a Medallion architecture in Databricks and ultimately to analytical dashboards.
+End-to-end data engineering portfolio project simulating a large US retail company, from an operational PostgreSQL source system through a Databricks Medallion architecture and ultimately to analytical and data-quality models for Power BI.
 
-The project demonstrates:
-
-- synthetic data generation at scale
-- PostgreSQL source-system design
-- batch extraction
-- Parquet source extraction
-- Databricks Unity Catalog and Volumes
-- RAW and Bronze ingestion
-- Delta Lake
-- incremental upsert processing
-- data-quality management
-- Silver transformations and quarantine
-- dimensional modeling
-- SCD Type 2
-- Gold analytical modeling
-- Power BI
-- data lineage and reconciliation
+The project is intentionally built with imperfect synthetic source data so that data quality, quarantine, lineage, reconciliation and downstream correction can be demonstrated rather than hidden.
 
 ---
 
@@ -30,137 +14,91 @@ The project demonstrates:
 | M2 | Synthetic data generation | ✅ Completed |
 | M3 | PostgreSQL source loading | ✅ Completed |
 | M4 | PostgreSQL → Parquet extraction | ✅ Completed |
-| M5 | Parquet → Databricks RAW | ✅ Completed |
-| M6 | Databricks Bronze creation + incremental loading | 🚧 In progress |
-| M7 | Silver / Data Quality / Quarantine | ⬜ Planned |
+| M5 | Parquet → Databricks RAW upload | ✅ Completed |
+| M6 | RAW → Bronze ingestion | ✅ Completed |
+| M7 | Bronze → Silver / Data Quality / Quarantine | 🚧 Implementation ready |
 | M8 | Gold analytical model | ⬜ Planned |
 | M9 | Power BI dashboards | ⬜ Planned |
-| M10 | Final documentation / portfolio packaging | ⬜ Planned |
+| M10 | Final documentation | ⬜ Planned |
 
-Current implementation checkpoint:
+The current implementation boundary is:
 
 ```text
-Python
-  ↓
-CSV
-  ↓
-PostgreSQL / retail_raw
-  ↓
-M4 — Parquet extraction
-  ↓
+PostgreSQL
+    ↓
+M4 — dated Parquet extraction
+    ↓
 M5 — Databricks RAW Volume
-  ↓
-M6 — Bronze Delta + incremental MERGE
-  ↓
-M7 — Silver / Data Quality
-  ↓
-Gold
-  ↓
+    ↓
+M6 — Bronze Delta
+    ↓
+M7 — Silver Data Quality / Quarantine
+    ↓
+M8 — Gold
+    ↓
 Power BI
 ```
+
+M7 is complete from an implementation/documentation perspective when the Databricks Job has been executed and its acceptance criteria validated.
 
 ---
 
 ## 2. Business Scenario
 
-The project simulates a US retail company operating:
+The project simulates a US retail company operating approximately:
 
 - 50 stores
 - 2,500 products
 - 100,000 customers
-- a large transaction dataset
-- invoice headers and invoice line items
+- approximately 55 million invoices
+- multiple invoice line items per invoice
 
-The source system intentionally contains data-quality problems.
+The synthetic source contains intentional data-quality problems, including:
 
-Examples include:
-
-- NULL customer references
-- NULL monetary values
+- NULL values
+- missing required attributes
+- invalid dates
+- invalid numeric values
 - invalid quantities
-- invalid discounts
-- referential-integrity problems
-- incomplete or inconsistent records
+- invalid monetary values
+- duplicate business identifiers
+- invalid foreign-key references
+- incomplete transactions
 
-These errors are intentional.
+A NULL `Customer_ID` on an invoice is intentionally treated as a legitimate **anonymous / unidentified customer transaction**, not as a Silver data-quality error. The sale remains available for downstream sales analytics. A supplied `Customer_ID` that does not exist as exactly one valid customer remains a referential-integrity error and is quarantined.
 
-The project does **not** remove them during ingestion.
-
-Instead:
-
-```text
-Source → RAW → Bronze
-                   │
-                   ▼
-             Silver / DQ
-                   │
-          ┌────────┴────────┐
-          ▼                 ▼
-        Valid            Invalid
-          │                 │
-          ▼                 ▼
-       Silver          Quarantine
-```
+These problems are deliberately preserved through extraction, RAW and Bronze.
 
 ---
 
-## 3. Architecture
+## 3. Medallion Architecture
 
 ```text
-                    ┌───────────────────┐
-                    │ Python Generator  │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ CSV Source Data   │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ PostgreSQL        │
-                    │ System of Record  │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ M4 — Parquet      │
-                    │ Extraction        │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ M5 — Databricks   │
-                    │ RAW Volume        │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ M6 — Bronze       │
-                    │ Delta / MERGE     │
-                    └─────────┬─────────┘
-                              │
-                       Data Quality
-                       & Transformation
-                              │
-                   ┌──────────┴──────────┐
-                   ▼                     ▼
-            ┌──────────────┐      ┌──────────────┐
-            │ SILVER       │      │ QUARANTINE   │
-            │ Clean/Valid  │      │ Invalid/DQ   │
-            └──────┬───────┘      └──────┬───────┘
-                   │                     │
-                   └──────────┬──────────┘
-                              ▼
-                    ┌───────────────────┐
-                    │ GOLD              │
-                    │ Analytics         │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ Power BI          │
-                    └───────────────────┘
+                     PostgreSQL
+                          │
+                          ▼
+                M4 — Parquet Extraction
+                          │
+                          ▼
+                M5 — Databricks RAW
+                          │
+                          ▼
+                 M6 — Bronze Delta
+                          │
+                 Data Quality / DQ
+                          │
+              ┌───────────┴───────────┐
+              ▼                       ▼
+       M7 — Silver              Quarantine
+       Clean / Typed             Invalid Data
+       / Conformed              / DQ Reasons
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+                    M8 — Gold
+                          │
+                          ▼
+                      Power BI
 ```
 
 ---
@@ -169,110 +107,187 @@ Source → RAW → Bronze
 
 ### PostgreSQL
 
-PostgreSQL is the simulated operational source / System of Record.
+PostgreSQL is the simulated operational System of Record.
 
-The source schema is:
+Source tables:
 
 ```text
-retail_raw.stores
-retail_raw.products
-retail_raw.customers
-retail_raw.invoices
-retail_raw.invoice_items
+stores
+products
+customers
+invoices
+invoice_items
 ```
 
-The current source loader defines all business fields as `TEXT`, deliberately allowing dirty values to reach downstream layers.
+The source schema is intentionally permissive so that downstream layers can demonstrate data-quality handling.
 
-### Parquet
+### Parquet / M4
 
-Parquet is an extraction and transport format.
+Parquet is an extraction and transport format, not a transformation layer.
 
 M4 preserves:
 
-- source column names
 - NULL values
 - invalid values
-- referential problems
-- records
-- source semantics
+- duplicate business identifiers
+- referential-integrity problems
+- source field names
+- source row content
 
-M4 also provides extraction controls including batch processing, row-count reconciliation, manifests, and extraction-date-based filenames.
+No business correction or deduplication is performed during extraction.
 
-### RAW
+### RAW / M5
 
 RAW is the immutable Databricks landing area.
 
-Current validated Volume:
+Validated Volume:
 
 ```text
 /Volumes/workspace/retail/raw
 ```
 
-M5 uploads Parquet files without business transformations and preserves the original filenames.
+M5 preserves the extracted Parquet filenames and does not apply business transformations.
 
-### Bronze
+### Bronze / M6
 
-Bronze is a structured Delta representation of the source data.
+Bronze is a structured Delta representation of the source.
 
-Bronze:
-
-- preserves business column names
-- preserves source values
-- adds technical metadata
-- tracks source-file lineage
-- processes new files incrementally
-- performs record-level upserts with Delta `MERGE`
-
-Bronze does **not** perform business cleansing.
-
-### Silver
-
-Silver will perform:
-
-- type casting
-- data-quality validation
-- null handling
-- referential-integrity checks
-- business-rule validation
-- deduplication
-- quarantine
-- conformance
-
-### Gold
-
-Gold will provide analytical models such as:
+Bronze preserves business-data problems and adds technical metadata:
 
 ```text
-dim_date
-dim_store
-dim_product
-dim_customer
-fact_sales
+_insert_datetime_utc
+_update_datetime_utc
+_source_file_name
+_source_row_id
 ```
 
-and data-quality analytical structures.
+The technical source-row identity is not a business key. This is required because Bronze must preserve duplicate and invalid business identifiers.
+
+### Silver / M7
+
+Silver is the first business-data-quality layer.
+
+Responsibilities:
+
+- required-field validation
+- date validation and typing
+- numeric validation and typing
+- business-key duplicate detection
+- referential-integrity validation
+- invoice-level transaction validation
+- quarantine of invalid records
+- lineage preservation
+- reconciliation
+
+Bronze is never modified by M7.
 
 ---
 
-## 5. PostgreSQL Source Tables
+## 5. M6 Bronze Objects
 
-Current source structures:
-
-### stores
+M6 creates:
 
 ```text
-store_id
-store_name
+workspace.bronze.stores
+workspace.bronze.products
+workspace.bronze.customers
+workspace.bronze.invoices
+workspace.bronze.invoice_items
+workspace.bronze._bronze_file_ingestion_log
+```
+
+M6 code:
+
+```text
+05_databricks/bronze/
+├── 01_create_bronze_tables.sql
+└── 02_load_bronze_tables.py
+```
+
+Documentation:
+
+```text
+docs/07_bronze_creation_and_loading.md
+```
+
+M6 is executed as a Databricks **Python script task**, not as a notebook.
+
+---
+
+## 6. M7 Silver Objects
+
+M7 creates the Silver schema:
+
+```text
+workspace.silver
+```
+
+### Clean tables
+
+```text
+workspace.silver._silver_file_ingestion_log
+workspace.silver.customers
+workspace.silver.invoice_items
+workspace.silver.invoices
+workspace.silver.products
+workspace.silver.stores
+```
+
+### Quarantine tables
+
+```text
+workspace.silver.quarantined_customers
+workspace.silver.quarantined_invoice_items
+workspace.silver.quarantined_invoices
+workspace.silver.quarantined_products
+workspace.silver.quarantined_stores
+```
+
+Every Silver and quarantine business table retains:
+
+```text
+_insert_datetime_utc
+_update_datetime_utc
+_source_file_name
+_source_row_id
+```
+
+Quarantine tables additionally contain:
+
+```text
+_quarantine_datetime_utc
+_dq_status
+_dq_error_code
+_dq_error_description
+```
+
+---
+
+## 7. M7 Data Quality Rules
+
+### Customers
+
+Required:
+
+```text
+customer_id
+first_name
+last_name
+street_address
 city
 state
 zip_code
-region
-manager_name
-opened_date
-square_footage
 ```
 
-### products
+Additional rules:
+
+- `customer_id` must be unique;
+- `join_date`, when populated, must be a valid date;
+- blank strings are treated as missing values.
+
+### Products
+
+Required:
 
 ```text
 product_id
@@ -283,36 +298,65 @@ subcategory
 brand
 unit_price
 cost
-is_active
 ```
 
-### customers
+Additional rules:
+
+- `product_id` must be unique;
+- `unit_price` and `cost` must be numeric;
+- `unit_price >= 0`;
+- `cost >= 0`.
+
+### Stores
+
+Required:
 
 ```text
-customer_id
-first_name
-last_name
-email
-phone
-street_address
+store_id
+store_name
 city
 state
 zip_code
-loyalty_tier
-join_date
+region
+manager_name
+opened_date
 ```
 
-### invoices
+Additional rules:
+
+- `store_id` must be unique;
+- `opened_date` must be valid;
+- `square_footage`, when populated, must be numeric and non-negative.
+
+### Invoices
+
+Required:
 
 ```text
 invoice_id
 store_id
-customer_id
 invoice_date
 payment_method
 ```
 
-### invoice_items
+Customer identification is optional at transaction time:
+
+- `customer_id = NULL` is accepted and represents an anonymous / unidentified customer;
+- a supplied, non-NULL `customer_id` must reference exactly one valid customer;
+- a supplied `customer_id` that does not exist in the valid customer dimension is quarantined;
+- anonymous transactions remain available for sales, product, store and payment analytics;
+- customer-specific analytics must distinguish identified customers from anonymous transactions.
+
+Additional rules:
+
+- `invoice_id` must be unique;
+- `invoice_date` must be valid;
+- `store_id` must reference exactly one valid store;
+- an invoice must have at least one item.
+
+### Invoice Items
+
+Required:
 
 ```text
 invoice_id
@@ -320,282 +364,127 @@ line_item
 product_id
 quantity
 unit_price
-discount
 ```
+
+Additional rules:
+
+- `line_item` must be a positive integer;
+- `quantity` must be a positive integer;
+- `product_id` must reference exactly one valid product;
+- `unit_price` must be numeric and non-negative;
+- `discount`, when populated, must be numeric and non-negative;
+- `(invoice_id, line_item)` must be unique.
 
 ---
 
-## 6. M4 — PostgreSQL → Parquet
+## 8. Invoice Atomicity
 
-M4 extracts PostgreSQL tables to:
+Invoice integrity is enforced at transaction level.
 
-```text
-data/parquet_export/
-```
-
-Example:
+An invoice enters clean Silver only when:
 
 ```text
-customers_2026_09_29_part-00001.parquet
-customers_2026_09_29_part-00002.parquet
-invoices_2026_09_29_part-00001.parquet
-invoice_items_2026_09_29_part-00001.parquet
+Header is valid
+AND
+Store reference is valid
+AND
+Customer_ID is NULL OR the supplied Customer_ID references one valid customer
+AND
+Invoice has at least one item
+AND
+EVERY item is valid
 ```
 
-The source extractor does not apply business transformations.
+If one invoice item is invalid:
 
-Technical controls include:
+```text
+Invalid item
+    ↓
+Invoice header → Quarantine
+All invoice items → Quarantine
+```
 
-- repeatable-read snapshot
-- server-side cursor
-- batch extraction
-- multiple Parquet parts
-- row-count reconciliation
-- atomic file publication
-- extraction manifests
-- extraction-date-based filenames
+If the invoice header is invalid:
+
+```text
+Invalid header
+    ↓
+Invoice header → Quarantine
+All invoice items → Quarantine
+```
+
+This prevents a partially valid transaction from entering the trusted Silver dataset.
 
 ---
 
-## 7. M5 — Databricks RAW
+## 9. Referential Integrity
 
-M5 uploads the M4 Parquet files to:
-
-```text
-/Volumes/workspace/retail/raw
-```
-
-The RAW Volume is under:
+M7 validates:
 
 ```text
-workspace
-└── retail
-    └── raw
+invoices.store_id
+        → workspace.silver.stores.store_id
+
+invoices.customer_id
+        → workspace.silver.customers.customer_id
+        (only when Customer_ID is supplied; NULL is accepted as anonymous)
+
+invoice_items.product_id
+        → workspace.silver.products.product_id
 ```
 
-Original filenames are preserved.
+A reference is considered valid only when the target identifier corresponds to exactly one valid entity.
 
-Example:
-
-```text
-customers_2026_09_29_part-00001.parquet
-```
-
-The RAW area is treated as an immutable landing zone.
-
-M5 does not:
-
-- clean data
-- change data types
-- deduplicate
-- merge files
-- apply business rules
-- overwrite existing files by default
-
-Technical JSON extraction manifests are kept separately under `_metadata` when uploaded.
+A duplicated target identifier is therefore treated as ambiguous and invalid.
 
 ---
 
-## 8. M6 — Databricks Bronze
+## 10. Silver Type Standardization
 
-M6 is the current implementation stage.
-
-The Bronze schema is:
+Silver converts Bronze source strings into business-oriented types:
 
 ```text
-workspace.bronze
+customers.join_date          DATE
+products.unit_price          DECIMAL(18,2)
+products.cost                DECIMAL(18,2)
+stores.opened_date            DATE
+stores.square_footage         BIGINT
+invoices.invoice_date         DATE
+invoice_items.line_item       BIGINT
+invoice_items.quantity        BIGINT
+invoice_items.unit_price      DECIMAL(18,2)
+invoice_items.discount        DECIMAL(18,2)
 ```
 
-The business tables are:
-
-```text
-workspace.bronze.stores
-workspace.bronze.products
-workspace.bronze.customers
-workspace.bronze.invoices
-workspace.bronze.invoice_items
-```
-
-A technical control table is also created:
-
-```text
-workspace.bronze._bronze_file_ingestion_log
-```
-
-### Bronze metadata
-
-Every business Bronze table adds:
-
-```text
-_insert_datetime_utc
-_update_datetime_utc
-_source_file_name
-```
-
-The metadata is technical only.
-
-`_insert_datetime_utc` records the first Bronze insertion.
-
-`_update_datetime_utc` records the latest successful Bronze upsert.
-
-`_source_file_name` identifies the Parquet file that supplied the current row version.
+Malformed values are quarantined rather than causing silent conversion or data loss.
 
 ---
 
-## 9. M6 Incremental Upsert
+## 11. M7 DQ Diagnostic Report
 
-The loader is:
+The PySpark loader supports `--dry-run` and prints a diagnostic report before any production write. The report deliberately separates **root causes** from **cascade quarantine** so that valid information quarantined by invoice atomicity is not mistaken for additional source errors.
 
-```text
-05_databricks/bronze/02_load_bronze_tables.py
-```
+The report includes:
 
-It is designed to run as a Databricks Job.
+- Bronze, Silver-valid and quarantine counts;
+- quarantine rates;
+- root DQ reasons for invoice headers;
+- root DQ reasons for invoice items;
+- bad item rows and distinct invoices affected by each item error;
+- number of invoices with NULL `Customer_ID` that are accepted as anonymous transactions;
+- number of invoices with a supplied but invalid `Customer_ID`;
+- invoices affected by one or more bad items;
+- final invoice and item quarantine counts;
+- direct-error rates versus final quarantine rates;
+- a 1% DQ sanity reference;
+- invoice/item quarantine-path reconciliation;
+- representative samples of directly bad headers, accepted anonymous invoices, bad-item invoices and directly bad item rows.
 
-The processing pattern is:
+The distinction is important: an invoice with a NULL `Customer_ID` is **not** a DQ error. An invoice with a supplied customer ID that does not exist in the valid customer dimension **is** a DQ error.
 
-```text
-RAW Volume
-    │
-    ▼
-discover Parquet files
-    │
-    ▼
-check ingestion log
-    │
-    ├── already SUCCESS → skip
-    │
-    └── new file
-          │
-          ▼
-       read Parquet
-          │
-          ▼
-    add technical metadata
-          │
-          ▼
-       Delta MERGE
-          │
-          ├── _source_row_id exists → UPDATE technical metadata
-          │
-          └── _source_row_id absent → INSERT complete source row
-          │
-          ▼
-       mark SUCCESS
-```
+The dry-run output is diagnostic only and does not write Silver or quarantine rows.
 
-The MERGE identity is:
-
-```text
-_source_row_id
-```
-
-It is deliberately **not** a business key.
-
-This distinction is essential because the source may contain duplicate or invalid business keys. Bronze must preserve every physical source row.
-
-The Bronze metadata is:
-
-| Column | Purpose |
-|---|---|
-| `_insert_datetime_utc` | First Bronze insertion timestamp for the physical source row |
-| `_update_datetime_utc` | Latest technical upsert timestamp |
-| `_source_file_name` | Exact Parquet filename |
-| `_source_row_id` | Technical identity of the physical source row; not a business key |
-
-No delete operation is performed.
-
-A later extraction does not delete a Bronze row simply because the row is absent from that extraction.
-
----
-
-## 10. M6 Source-Preservation Rule
-
-Example:
-
-```text
-PostgreSQL:
-quantity = -3
-
-        ↓
-
-Parquet:
-quantity = -3
-
-        ↓
-
-RAW:
-quantity = -3
-
-        ↓
-
-Bronze:
-quantity = -3
-
-        ↓
-
-Silver:
-validate / correct / quarantine
-```
-
-Bronze must not silently turn:
-
-```text
--3 → 3
-NULL → 0
-invalid → NULL
-```
-
-Those are Silver responsibilities.
-
----
-
-## 11. M6 Duplicate-Key Handling
-
-Duplicate business keys are **not an error for Bronze ingestion**.
-
-Examples that must all be loaded:
-
-```text
-customer_id = C001
-customer_id = C001
-```
-
-or:
-
-```text
-invoice_id = INV001
-line_item  = 1
-
-invoice_id = INV001
-line_item  = 1
-```
-
-Bronze does not select a winner, deduplicate, or reject these rows.
-
-Each physical source row receives its own `_source_row_id`, allowing Delta MERGE to operate without using the business key as the merge condition.
-
-The intended flow is:
-
-```text
-source duplicate / invalid value
-          ↓
-       Parquet
-          ↓
-         RAW
-          ↓
-        Bronze
-          ↓
-Silver data-quality / correction / quarantine
-```
-
-This means **errors are preserved and cached in Bronze rather than lost before Silver**.
-
-Only technical failures may stop ingestion, such as an unreadable Parquet file, incompatible schema, or failed Delta transaction. A bad business value is never a reason to discard its row.
-
----
-
-## 12. Repository Structure
+## 11. M7 Repository Structure
 
 ```text
 us-retail-end-to-end-medallion/
@@ -604,8 +493,10 @@ us-retail-end-to-end-medallion/
 │   └── postgres/
 │
 ├── 02_data_gen/
+│   └── ...
 │
 ├── 03_source/
+│   └── ...
 │
 ├── 04_extraction/
 │   └── export_postgres_to_parquet.py
@@ -614,138 +505,361 @@ us-retail-end-to-end-medallion/
 │   ├── raw/
 │   │   └── upload_parquet_to_databricks.py
 │   │
-│   └── bronze/
-│       ├── 01_create_bronze_tables.sql
-│       └── 02_load_bronze_tables.py
+│   ├── bronze/
+│   │   ├── 01_create_bronze_tables.sql
+│   │   └── 02_load_bronze_tables.py
+│   │
+│   └── silver/
+│       ├── 01_silver_tables_creation.sql
+│       └── 02_silver_databricks_load.py
 │
 ├── data/
 │   └── samples/
 │
 ├── docs/
 │   ├── ...
-│   ├── 06_upload_to_databricks.md
-│   └── 07_bronze_creation_and_loading.md
+│   ├── 07_bronze_creation_and_loading.md
+│   └── 08_silver_creation_and_loading.md
 │
 ├── docker-compose.yml
+├── .env.example
+├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## 13. M6 Job
-
-The recommended Databricks Job is:
+## 12. Databricks Workspace Structure
 
 ```text
-Job:
-retail-m6-bronze-incremental-load
-
-Task:
-load-bronze-tables
-
-Type:
-Python script
-
-Script:
-05_databricks/bronze/02_load_bronze_tables.py
+Workspace
+└── retail
+    ├── bronze
+    │   ├── 01_create_bronze_tables.sql
+    │   └── 02_load_bronze_tables.py
+    │
+    └── silver
+        ├── 01_silver_tables_creation.sql
+        └── 02_silver_databricks_load.py
 ```
 
-The Job reads:
+Databricks data hierarchy:
 
 ```text
-/Volumes/workspace/retail/raw
-```
-
-and writes:
-
-```text
-workspace.bronze
-```
-
-The Job is intended to be executed once for the current project milestone, but the implementation is deliberately safe for repeated executions.
-
-A repeated execution:
-
-- skips already-successful files
-- processes newly arrived files
-- updates existing records with MERGE
-- inserts new records
-- does not delete Bronze records
-- does not modify RAW files
-
-Detailed Job instructions are in:
-
-```text
-docs/07_bronze_creation_and_loading.md
+workspace
+├── bronze
+│   ├── stores
+│   ├── products
+│   ├── customers
+│   ├── invoices
+│   ├── invoice_items
+│   └── _bronze_file_ingestion_log
+│
+└── silver
+    ├── stores
+    ├── products
+    ├── customers
+    ├── invoices
+    ├── invoice_items
+    ├── quarantined_stores
+    ├── quarantined_products
+    ├── quarantined_customers
+    ├── quarantined_invoices
+    ├── quarantined_invoice_items
+    └── _silver_file_ingestion_log
 ```
 
 ---
 
-## 14. Validation
+## 13. M7 Job
 
-After M6, verify:
+Recommended Databricks Job:
 
-```sql
-SHOW TABLES IN workspace.bronze;
+```text
+M7 - Silver Data Quality Load
+    │
+    └── load_silver
+          │
+          ├── Type: Python script
+          ├── Source: Workspace
+          └── File:
+              /Workspace/retail/silver/02_silver_databricks_load.py
 ```
 
-Then:
+The script must run as a **Python script task**, not as a notebook.
 
-```sql
-SELECT COUNT(*) FROM workspace.bronze.stores;
-SELECT COUNT(*) FROM workspace.bronze.products;
-SELECT COUNT(*) FROM workspace.bronze.customers;
-SELECT COUNT(*) FROM workspace.bronze.invoices;
-SELECT COUNT(*) FROM workspace.bronze.invoice_items;
+No parameters are required for the standard execution.
+
+Optional controlled execution:
+
+```text
+--table customers
+--table products
+--table stores
+--table invoices
+--table invoice_items
 ```
 
-Check the file ledger:
+Dry run:
 
-```sql
-SELECT
-    source_table,
-    status,
-    COUNT(*) AS files
-FROM workspace.bronze._bronze_file_ingestion_log
-GROUP BY source_table, status
-ORDER BY source_table, status;
+```text
+--dry-run
 ```
 
-Check lineage:
+Full M7 operating instructions are documented in:
 
-```sql
-SELECT
-    _source_file_name,
-    COUNT(*) AS rows
-FROM workspace.bronze.customers
-GROUP BY _source_file_name
-ORDER BY _source_file_name;
+```text
+docs/08_silver_creation_and_loading.md
 ```
 
 ---
 
-## 15. Technology Stack
+## 14. M7 Reconciliation
+
+M7 must preserve traceability from Bronze to one of two outcomes:
+
+```text
+Bronze record
+     │
+     ├── Valid → Silver
+     │
+     └── Invalid → Quarantine
+```
+
+For ordinary entity tables:
+
+```text
+Bronze rows = Silver rows + Quarantine rows
+```
+
+Invoice-level reconciliation also respects transaction atomicity: if an invoice is invalid, all related invoice detail records follow the invoice into quarantine.
+
+The process prints Bronze/Silver/Quarantine counts for operational reconciliation.
+
+---
+
+## 15. Idempotency and Lineage
+
+Bronze provides the physical source-row identity:
+
+```text
+_source_row_id
+```
+
+M7 uses this technical identity to MERGE valid Silver records and avoid creating duplicate Silver rows during Job retries.
+
+Quarantine records are also protected from repeated insertion using `_source_row_id`.
+
+Technical lineage remains available through:
+
+```text
+_source_file_name
+_source_row_id
+_insert_datetime_utc
+_update_datetime_utc
+```
+
+---
+
+## 16. Data Quality Analytics
+
+Quarantine data is intentionally not deleted.
+
+It is designed to support future Gold data-quality models and a Power BI Error Correction dashboard.
+
+Potential future metrics include:
+
+- total records processed;
+- valid records;
+- quarantined records;
+- acceptance rate;
+- quarantine rate;
+- errors by rule;
+- errors by source table;
+- errors by store;
+- errors by state;
+- error trends over time;
+- most frequent data-quality violations.
+
+---
+
+## 17. M7 Acceptance Criteria
+
+M7 is considered validated when:
+
+- `workspace.silver` exists;
+- all requested Silver tables exist;
+- all requested quarantine tables exist;
+- all required technical metadata columns exist;
+- required fields are enforced;
+- dates are validated and typed;
+- numeric values are validated and typed;
+- duplicate business identifiers are quarantined;
+- invalid references are quarantined;
+- invoice header quality is enforced;
+- invoice item quality is enforced;
+- an invalid invoice item quarantines the entire invoice;
+- an invalid invoice header quarantines the entire invoice;
+- valid invoices contain all and only valid invoice items;
+- clean Silver tables contain no invalid foreign-key references;
+- quarantine rows retain source lineage;
+- a Job rerun does not create duplicate Silver rows;
+- Bronze remains unchanged.
+
+---
+
+## 18. Development Roadmap
+
+### Phase 1 — Infrastructure
+
+- [x] WSL2 / Ubuntu
+- [x] Docker
+- [x] PostgreSQL
+- [x] Database initialization
+
+### Phase 2 — Synthetic Data Generation
+
+- [x] Generate stores
+- [x] Generate products
+- [x] Generate customers
+- [x] Generate invoices
+- [x] Generate invoice items
+- [x] Introduce intentional data-quality issues
+- [x] Generate large-scale dataset
+
+### Phase 3 — PostgreSQL Source
+
+- [x] Create source tables
+- [x] Load generated data
+- [x] Preserve source-data-quality issues
+- [x] Validate source data
+
+### Phase 4 — PostgreSQL → Parquet
+
+- [x] Define extraction contract
+- [x] Implement extraction script
+- [x] Batch extraction
+- [x] Generate Parquet
+- [x] Reconcile PostgreSQL vs Parquet
+- [x] Extraction metadata
+- [x] Dated extraction filenames
+
+### Phase 5 — Databricks RAW / Bronze
+
+#### M5 — RAW Upload
+
+- [x] Upload Parquet files
+- [x] Preserve filenames
+- [x] Use Unity Catalog Volume
+- [x] Protect existing files from accidental overwrite
+- [x] Support controlled/date-scoped upload
+
+#### M6 — Bronze
+
+- [x] Create Bronze Delta tables
+- [x] Preserve source business values
+- [x] Add ingestion metadata
+- [x] Preserve duplicate business keys
+- [x] Implement technical source-row identity
+- [x] Implement incremental file processing
+- [x] Document and validate Job execution
+
+### Phase 6 — Silver / Data Quality
+
+#### M7
+
+- [x] Define required-field rules
+- [x] Define type standardization
+- [x] Define duplicate rules
+- [x] Define referential-integrity rules
+- [x] Define invoice atomicity rules
+- [x] Create Silver tables
+- [x] Create quarantine tables
+- [x] Implement PySpark quality load
+- [x] Implement lineage preservation
+- [x] Implement reconciliation output
+- [ ] Execute Databricks Job and validate acceptance criteria
+
+### Phase 7 — Gold
+
+- [ ] Design dimensional model
+- [ ] Create dimensions
+- [ ] Create fact tables
+- [ ] Implement SCD Type 2 where appropriate
+- [ ] Create analytical aggregates
+- [ ] Create Gold data-quality model
+- [ ] Validate Gold against Silver
+
+### Phase 8 — Power BI
+
+- [ ] Connect Power BI to Gold
+- [ ] Build executive dashboard
+- [ ] Build store/regional dashboard
+- [ ] Build product dashboard
+- [ ] Build data-quality dashboard
+- [ ] Validate KPIs
+
+---
+
+## 19. Architectural Principles
+
+### Source Preservation
+
+Source data is preserved before business transformation.
+
+### Separation of Concerns
+
+Each layer has a defined responsibility.
+
+### Data Quality as a First-Class Concern
+
+Invalid records are not silently discarded. They are quarantined and measurable.
+
+### Transaction Integrity
+
+Invoices are treated as atomic business transactions at Silver level.
+
+### Traceability
+
+Every Silver/quarantine record remains traceable to its Bronze source row.
+
+### Reconciliation
+
+Layer transitions must be measurable and explainable.
+
+### Reproducibility
+
+Infrastructure and processing are implemented as code and documented execution procedures.
+
+### Business-Oriented Analytics
+
+Gold will expose trusted, business-oriented structures rather than raw source structures.
+
+---
+
+## 20. Technology Stack
 
 ### Data Generation
 
 - Python
 - Faker
-- Pandas / standard library
+- Python standard libraries
 
-### Source Database
+### Source System
 
 - PostgreSQL
 - Docker
 - Ubuntu / WSL2
 
-### Data Lake / Processing
+### Data Platform
 
 - Databricks
 - Apache Spark / PySpark
 - Delta Lake
-- Parquet
+- Unity Catalog
 - Unity Catalog Volumes
+- Parquet
 
 ### Analytics
 
@@ -760,94 +874,19 @@ ORDER BY _source_file_name;
 
 ---
 
-## 16. Design Principles
-
-### Preserve source data
-
-Ingestion layers do not silently correct source data.
-
-### Separate ingestion from transformation
-
-Bronze is responsible for technical ingestion and lineage. Silver is responsible for business-data-quality processing.
-
-### Make data quality explicit
-
-Invalid data should be identified and classified rather than hidden.
-
-### Maintain lineage
-
-A Bronze row should be traceable to its source Parquet file.
-
-### Reconcile boundaries
-
-Important pipeline boundaries should provide technical evidence that records and files were not silently lost.
-
-### Build for scale
-
-The project deliberately uses a large synthetic retail dataset to demonstrate techniques applicable to larger data platforms.
-
-### Prefer explainable architecture
-
-Each technology and design pattern should have a clear architectural purpose.
-
----
-
-## 17. Roadmap
-
-### Completed
-
-- [x] WSL2 / Ubuntu infrastructure
-- [x] Docker / PostgreSQL
-- [x] Synthetic data generation
-- [x] Source data-quality error injection
-- [x] PostgreSQL loading
-- [x] PostgreSQL → Parquet extraction
-- [x] Parquet reconciliation and manifests
-- [x] Databricks RAW Volume
-- [x] Parquet upload to RAW
-- [x] M6 Bronze DDL
-- [x] M6 incremental Bronze loader design
-- [x] M6 Databricks Job design
-- [x] M6 duplicate/error preservation design
-
-### Next
-
-- [ ] Execute and validate M6 Job
-- [ ] Validate duplicate and invalid source rows are retained in Bronze
-- [ ] Validate Bronze row counts against M4 manifests
-- [ ] Validate incremental re-execution
-- [ ] Implement Silver data-quality rules
-- [ ] Implement quarantine structures
-- [ ] Implement referential-integrity validation
-- [ ] Implement business-rule validation
-- [ ] Build Gold dimensional model
-- [ ] Build Power BI dashboards
-- [ ] Final architecture and portfolio documentation
-
----
-
-## 18. Portfolio Objective
-
-The project demonstrates the design and implementation of a complete data platform:
+## 21. Current Milestone
 
 ```text
-Source System
-     ↓
-Data Extraction
-     ↓
-Parquet
-     ↓
-Databricks RAW
-     ↓
-Bronze / Incremental MERGE
-     ↓
-Silver + Data Quality
-     ↓
-Quarantine
-     ↓
-Gold
-     ↓
-Power BI
+M1  Infrastructure             ✅
+M2  Data Generation            ✅
+M3  PostgreSQL Source          ✅
+M4  PostgreSQL → Parquet       ✅
+M5  Databricks RAW             ✅
+M6  Bronze                     ✅
+M7  Silver / DQ / Quarantine   🚧
+M8  Gold                       ⬜
+M9  Power BI                   ⬜
+M10 Final Documentation        ⬜
 ```
 
-The completed solution is intended to demonstrate practical data-engineering capabilities across ingestion, data quality, transformation, analytical modeling, orchestration, lineage, and BI.
+The immediate implementation step is to upload the M7 SQL and PySpark files, create `workspace.silver`, create the `M7 - Silver Data Quality Load` Job, execute it, and validate the acceptance criteria documented in `docs/08_silver_creation_and_loading.md`.
