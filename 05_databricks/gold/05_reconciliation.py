@@ -1,357 +1,179 @@
-#!/usr/bin/env python3
-"""Manual, read-only row-count reconciliation across RAW, Bronze, Silver, Gold.
+#!/usr/bin/env python
+"""Read-only integrity and reconciliation gate for the US Retail Gold layer.
 
-Run manually in the Databricks runtime after Gold base loading. This is not a
-Databricks Job and it does not modify any data.
-
-RAW counts include every matching Parquet file in the RAW Volume. Multiple
-full-snapshot extraction dates can make RAW exceed Bronze's current/upserted
-state. Gold dimension counts use current SCD2 rows and exclude the generic -1
-member; historical SCD2 versions are not counted as current business entities.
+Run after 03_load_gold_schema_tables.py and 04_load_gold_agg_tables.py.
+This script does not modify data. Any failed assertion raises an exception.
 """
-import re
-import sys
-from pyspark.sql import SparkSession, functions as F
+from pyspark.sql import functions as F
 
-BRONZE = "workspace.bronze"
-SILVER = "workspace.silver"
-GOLD = "workspace.gold"
-RAW_PATH = "/Volumes/workspace/retail/raw"
-TABLES = ("customers", "products", "stores", "invoices", "invoice_items")
-RAW_FILENAME = re.compile(
-    r"^(customers|products|stores|invoices|invoice_items)_"
-    r"\d{4}_\d{2}_\d{2}_part-\d+\.parquet$"
-)
+S = "workspace.silver"
+G = "workspace.gold"
 
+def assert_zero(df, label):
+    sample = df.limit(10)
+    if sample.count():
+        raise RuntimeError(f"FAIL: {label}. Sample: {[r.asDict(recursive=True) for r in sample.collect()]}")
 
-def count_table(spark, name, condition=None):
-    try:
-        df = spark.table(name)
-        if condition is not None:
-            df = df.filter(condition)
-        return df.count()
-    except Exception as exc:
-        raise RuntimeError(f"Cannot read required table {name}: {exc}") from exc
+def assert_count_equal(source, target, label):
+    a = spark.table(source).count()
+    b = spark.table(target).count()
+    if a != b:
+        raise RuntimeError(f"FAIL: {label}: source={a}, target={b}")
+    print(f"PASS: {label}: {a:,} rows")
 
-
-def list_raw_files():
-    try:
-        entries = dbutils.fs.ls(RAW_PATH)
-    except NameError as exc:
-        raise RuntimeError(
-            "dbutils.fs.ls is unavailable. Run this script in the Databricks runtime."
-        ) from exc
-
-    found, ignored = [], []
-    for entry in entries:
-        if entry.isDir():
-            continue
-        if not entry.name.lower().endswith(".parquet"):
-            continue
-        match = RAW_FILENAME.match(entry.name)
-        if match:
-            found.append((match.group(1), entry.path))
-        else:
-            ignored.append(entry.name)
-    if ignored:
-        print("WARNING: Parquet files ignored because their names do not match "
-              "the expected table_date_part convention:")
-        for name in sorted(ignored):
-            print(f"  {name}")
-    return found
-
-
-def count_raw(spark, raw_files, table):
-    paths = [path for name, path in raw_files if name == table]
-    if not paths:
-        print(f"WARNING: no matching RAW files for {table}")
-        return 0
-    return spark.read.parquet(*paths).count()
-
-
-def reconcile_entity(spark, raw_files, table):
-    raw = count_raw(spark, raw_files, table)
-    bronze = count_table(spark, f"{BRONZE}.{table}")
-    silver_valid = count_table(spark, f"{SILVER}.{table}")
-    silver_quarantine = count_table(spark, f"{SILVER}.quarantined_{table}")
-
-    if table == "customers":
-        gold_valid = count_table(
-            spark, f"{GOLD}.dim_customer",
-            (F.col("is_current") == True) & (F.col("customer_key") != -1))
-        gold_quarantine = count_table(spark, f"{GOLD}.quarantined_customers")
-    elif table == "stores":
-        gold_valid = count_table(
-            spark, f"{GOLD}.dim_store",
-            (F.col("is_current") == True) & (F.col("store_key") != -1))
-        gold_quarantine = count_table(spark, f"{GOLD}.quarantined_stores")
-    elif table == "products":
-        gold_valid = count_table(
-            spark, f"{GOLD}.dim_product",
-            (F.col("is_current") == True) & (F.col("product_key") != -1))
-        gold_quarantine = count_table(spark, f"{GOLD}.quarantined_products")
-    elif table == "invoices":
-        gold_valid = count_table(spark, f"{GOLD}.fact_invoice")
-        gold_quarantine = count_table(spark, f"{GOLD}.quarantined_invoices")
-    else:
-        gold_valid = count_table(spark, f"{GOLD}.fact_invoice_item")
-        gold_quarantine = count_table(spark, f"{GOLD}.quarantined_invoice_items")
-
-    return {
-        "table": table, "raw": raw, "bronze": bronze,
-        "silver_valid": silver_valid, "silver_quarantine": silver_quarantine,
-        "gold_valid": gold_valid, "gold_quarantine": gold_quarantine,
-    }
-
-
-
-# ---------- Gold aggregate reconciliation ----------
-def compare_grouped(expected, actual, keys, measures, label):
-    """Compare an expected aggregation with its Gold table at the declared grain.
-
-    Full outer join plus null-safe key equality detects missing, extra, and
-    measure-mismatched aggregate rows. Returns (mismatch_count, duplicate_count).
-    """
-    expected = expected.select(*keys, *measures).withColumn("_expected_present", F.lit(1)).alias("e")
-    actual = actual.select(*keys, *measures).withColumn("_actual_present", F.lit(1)).alias("a")
-    join_condition = None
-    for key in keys:
-        part = F.col(f"e.{key}").eqNullSafe(F.col(f"a.{key}"))
-        join_condition = part if join_condition is None else (join_condition & part)
-
-    joined = expected.join(actual, join_condition, "full")
-    # Presence markers distinguish a genuinely NULL key value (which may be
-    # valid at this grain) from a row missing on one side of the full join.
-    mismatch = (F.col("e._expected_present").isNull() |
-                F.col("a._actual_present").isNull())
-    for measure in measures:
-        # Compare decimal and integer measures exactly; use a tiny tolerance only
-        # for floating point types, if a future schema introduces them.
-        mismatch = mismatch | ~F.col(f"e.{measure}").eqNullSafe(F.col(f"a.{measure}"))
-    mismatch_count = joined.filter(mismatch).count()
-
-    actual_df = actual.select(*keys)
-    duplicate_count = (actual_df.groupBy(*keys).count()
-                       .filter(F.col("count") > 1).count())
-    print(f"{label}: {'PASS' if mismatch_count == 0 else 'FAIL'} — "
-          f"{mismatch_count:,} missing/extra/mismatched grain rows; "
-          f"{duplicate_count:,} duplicate grain groups")
-    return mismatch_count, duplicate_count
-
-
-def build_expected_sales(spark):
-    """Recalculate the three sales aggregates from Gold facts, not from aggregates."""
-    invoices = spark.table(f"{GOLD}.fact_invoice")
-    items = spark.table(f"{GOLD}.fact_invoice_item")
-    dates = spark.table(f"{GOLD}.dim_date").select("date_key", "full_date")
-    customers = spark.table(f"{GOLD}.dim_customer").select("customer_key", "loyalty_tier")
-    products = spark.table(f"{GOLD}.dim_product").select("product_key", "cost")
-
-    invoice_context = (invoices.join(dates, "date_key", "inner")
-        .join(customers, "customer_key", "left")
-        .select("invoice_key", "invoice_id", "date_key", "store_key", "payment_method",
-                F.coalesce(F.col("loyalty_tier"), F.lit("Unknown")).alias("loyalty_tier")))
-
-    line = (items.join(invoice_context, "invoice_key", "inner")
-        .join(products, "product_key", "left")
-        .withColumn("line_revenue", F.col("quantity") * F.col("unit_price") -
-                    F.coalesce(F.col("discount"), F.lit(0)))
-        .withColumn("line_cost", F.col("quantity") * F.coalesce(F.col("cost"), F.lit(0)))
-        .withColumn("line_margin", F.col("line_revenue") - F.col("line_cost")))
-
-    daily_keys = ["date_key", "store_key", "loyalty_tier", "payment_method"]
-    daily_revenue = line.groupBy(*daily_keys).agg(
-        F.sum("line_revenue").cast("decimal(20,2)").alias("revenue"),
-        F.sum("quantity").cast("long").alias("units_sold"),
-        F.sum("line_margin").cast("decimal(20,2)").alias("gross_margin"))
-    daily_invoices = invoice_context.groupBy(*daily_keys).agg(
-        F.countDistinct("invoice_id").cast("long").alias("invoice_count"))
-    daily = (daily_revenue.join(daily_invoices, daily_keys, "full")
-             .fillna({"invoice_count": 0, "units_sold": 0, "revenue": 0, "gross_margin": 0})
-             .select(*daily_keys, "invoice_count", "revenue", "units_sold", "gross_margin"))
-
-    product_daily = line.groupBy("date_key", "product_key").agg(
-        F.sum("quantity").cast("long").alias("units_sold"),
-        F.sum("line_revenue").cast("decimal(20,2)").alias("revenue"),
-        F.sum("line_margin").cast("decimal(20,2)").alias("gross_margin"))
-
-    product_store_keys = ["date_key", "product_key", "store_key", "loyalty_tier", "payment_method"]
-    product_store_daily = line.groupBy(*product_store_keys).agg(
-        F.sum("quantity").cast("long").alias("units_sold"),
-        F.sum("line_revenue").cast("decimal(20,2)").alias("revenue"),
-        F.sum("line_margin").cast("decimal(20,2)").alias("gross_margin"))
-    return daily, product_daily, product_store_daily
-
-
-def reconcile_sales_aggregates(spark):
-    print("\\nGOLD SALES AGGREGATE RECONCILIATION")
-    expected_daily, expected_product, expected_product_store = build_expected_sales(spark)
-    results = []
-    results.append(compare_grouped(
-        expected_daily, spark.table(f"{GOLD}.agg_sales_daily"),
-        ["date_key", "store_key", "loyalty_tier", "payment_method"],
-        ["invoice_count", "revenue", "units_sold", "gross_margin"],
-        "agg_sales_daily"))
-    results.append(compare_grouped(
-        expected_product, spark.table(f"{GOLD}.agg_sales_product_daily"),
-        ["date_key", "product_key"], ["units_sold", "revenue", "gross_margin"],
-        "agg_sales_product_daily"))
-    results.append(compare_grouped(
-        expected_product_store, spark.table(f"{GOLD}.agg_sales_product_store_daily"),
-        ["date_key", "product_key", "store_key", "loyalty_tier", "payment_method"],
-        ["units_sold", "revenue", "gross_margin"],
-        "agg_sales_product_store_daily"))
-    return results
-
-
-def reconcile_dq_aggregates(spark):
-    print("\\nGOLD DATA-QUALITY AGGREGATE RECONCILIATION")
-    issues = spark.table(f"{GOLD}.fact_data_quality_issue")
-    rules = spark.table(f"{GOLD}.dim_data_quality_rule").select("dq_rule_key", "severity")
-    dates = spark.table(f"{GOLD}.dim_date").select("date_key", "full_date")
-    expected_issues = (issues.join(rules, "dq_rule_key", "left")
-        .withColumn("issue_date", F.to_date("_quarantine_datetime_utc"))
-        .withColumn("dq_status", F.coalesce(F.col("_dq_status"), F.lit("Unknown")))
-        .join(dates, F.col("issue_date") == F.col("full_date"), "left")
-        .withColumn("geography_key", F.lit(-1).cast("long")))
-    dq_keys = ["dq_date_key", "source_table", "source_file_name", "dq_rule_key",
-               "severity", "dq_status", "geography_key"]
-    expected_dq = expected_issues.groupBy(
-        F.col("date_key").alias("dq_date_key"), "source_table", "source_file_name",
-        "dq_rule_key", "severity", "dq_status", "geography_key").agg(
-        F.count("*").cast("long").alias("dq_issue_count"),
-        F.countDistinct(F.struct("source_table", "source_row_id")).cast("long")
-            .alias("affected_record_count"))
-    dq_result = compare_grouped(
-        expected_dq, spark.table(f"{GOLD}.agg_data_quality_daily"), dq_keys,
-        ["dq_issue_count", "affected_record_count"], "agg_data_quality_daily")
-
-    # The record aggregate is a current per-file snapshot, not historical daily
-    # history. Rebuild its expected current snapshot from Silver using the same
-    # source-file grouping and today's evaluation_date_key.
-    snapshot_frames = []
-    for source in TABLES:
-        clean = spark.table(f"{SILVER}.{source}")
-        quarantine = spark.table(f"{SILVER}.quarantined_{source}")
-        valid = clean.groupBy(F.col("_source_file_name").alias("source_file_name")).agg(
-            F.count("*").cast("long").alias("valid_records"))
-        incorrect = quarantine.groupBy(
-            F.col("_source_file_name").alias("source_file_name")).agg(
-            F.count("*").cast("long").alias("incorrect_records"))
-        snapshot = (valid.join(incorrect, "source_file_name", "full")
-            .fillna({"valid_records": 0, "incorrect_records": 0})
-            .withColumn("source_table", F.lit(source))
-            .withColumn("total_records", (F.col("valid_records") + F.col("incorrect_records")).cast("long"))
-            .withColumn("evaluation_date_key", F.date_format(F.current_date(), "yyyyMMdd").cast("int"))
-            .withColumn("geography_key", F.lit(-1).cast("long"))
-            .select("evaluation_date_key", "source_table", "source_file_name", "geography_key",
-                    "total_records", "valid_records", "incorrect_records"))
-        snapshot_frames.append(snapshot)
-    expected_records = snapshot_frames[0]
-    for frame in snapshot_frames[1:]:
-        expected_records = expected_records.unionByName(frame)
-    record_result = compare_grouped(
-        expected_records, spark.table(f"{GOLD}.agg_data_quality_record_daily"),
-        ["evaluation_date_key", "source_table", "source_file_name", "geography_key"],
-        ["total_records", "valid_records", "incorrect_records"],
-        "agg_data_quality_record_daily")
-
-    # Independently verify the core DQ arithmetic, including every row in the table.
-    record_table = spark.table(f"{GOLD}.agg_data_quality_record_daily")
-    arithmetic_failures = record_table.filter(
-        F.col("total_records") != F.col("valid_records") + F.col("incorrect_records")).count()
-    print(f"agg_data_quality_record_daily arithmetic: "
-          f"{'PASS' if arithmetic_failures == 0 else 'FAIL'} — "
-          f"{arithmetic_failures:,} rows where total != valid + incorrect")
-    return [dq_result, record_result, (arithmetic_failures, 0)]
+def check_scd2(dim_name, natural_key, surrogate_key):
+    d = spark.table(f"{G}.{dim_name}")
+    business = d.filter((F.col(surrogate_key) != -1) & F.col(natural_key).isNotNull())
+    assert_zero(business.filter(F.col("effective_from") >= F.col("effective_to")),
+        f"{dim_name}: invalid SCD2 interval")
+    assert_zero(business.filter(F.col("is_current") == True).groupBy(natural_key).count().filter("count != 1"),
+        f"{dim_name}: expected exactly one current row per natural key")
+    a, b = business.alias("a"), business.alias("b")
+    overlap = a.join(b,
+        (F.col(f"a.{natural_key}") == F.col(f"b.{natural_key}")) &
+        (F.col(f"a.{surrogate_key}") < F.col(f"b.{surrogate_key}")) &
+        (F.col("a.effective_from") < F.col("b.effective_to")) &
+        (F.col("b.effective_from") < F.col("a.effective_to")), "inner")
+    assert_zero(overlap, f"{dim_name}: overlapping SCD2 intervals")
+    print(f"PASS: {dim_name} SCD2 integrity")
 
 def main():
-    spark = SparkSession.builder.getOrCreate()
-    spark.conf.set("spark.sql.session.timeZone", "UTC")
+    spark.conf.set("spark.sql.session.timeZone","UTC")
+    # Required tables
+    for name in ["customers","stores","products","invoices","invoice_items"]:
+        if not spark.catalog.tableExists(f"{S}.{name}"):
+            raise RuntimeError(f"Missing required Silver table {S}.{name}")
+    for name in ["dim_customer","dim_store","dim_product","dim_date","fact_invoice",
+                 "fact_invoice_item","agg_sales_daily","agg_sales_product_daily",
+                 "agg_sales_product_store_daily","agg_data_quality_daily","agg_data_quality_record_daily"]:
+        if not spark.catalog.tableExists(f"{G}.{name}"):
+            raise RuntimeError(f"Missing required Gold table {G}.{name}")
 
-    print("=" * 100)
-    print("MANUAL MEDALLION RECONCILIATION — READ ONLY")
-    print(f"RAW: {RAW_PATH} | Bronze: {BRONZE} | Silver: {SILVER} | Gold: {GOLD}")
-    print("=" * 100)
+    assert_count_equal(f"{S}.invoices", f"{G}.fact_invoice", "Silver invoices vs Gold fact_invoice")
+    assert_count_equal(f"{S}.invoice_items", f"{G}.fact_invoice_item", "Silver invoice_items vs Gold fact_invoice_item")
+    assert_zero(spark.table(f"{G}.fact_invoice").groupBy("invoice_id").count().filter("count != 1"),
+        "Gold fact_invoice must have exactly one row per invoice_id")
+    assert_zero(spark.table(f"{G}.fact_invoice_item").groupBy("invoice_id","line_item").count().filter("count != 1"),
+        "Gold fact_invoice_item must have exactly one row per (invoice_id,line_item)")
 
-    raw_files = list_raw_files()
-    print(f"RAW Parquet files recognized: {len(raw_files)}")
-    dates = set()
-    for _, path in raw_files:
-        match = re.search(r"_(\d{4}_\d{2}_\d{2})_part-\d+\.parquet$", path)
-        if match:
-            dates.add(match.group(1))
-    print(f"RAW extraction date batches detected: {len(dates)}")
-    if len(dates) > 1:
-        print(
-            "WARNING: counts include files from every extraction date. If each "
-            "date represents a full snapshot, RAW may exceed Bronze's upserted "
-            "current-state row count; review extraction semantics before treating "
-            "that difference as a defect."
-        )
+    check_scd2("dim_customer","customer_id","customer_key")
+    check_scd2("dim_store","store_id","store_key")
+    check_scd2("dim_product","product_id","product_key")
 
-    results = [reconcile_entity(spark, raw_files, table) for table in TABLES]
+    # A populated source ID must never silently map to the unknown member.
+    bad_customer = (spark.table(f"{S}.invoices").filter(F.col("customer_id").isNotNull()).alias("s")
+        .join(spark.table(f"{G}.fact_invoice").alias("g"),"invoice_id","inner")
+        .filter(F.col("g.customer_key") == -1))
+    assert_zero(bad_customer, "Non-null Silver customer_id mapped to customer_key=-1")
+    bad_store = (spark.table(f"{S}.invoices").filter(F.col("store_id").isNotNull()).alias("s")
+        .join(spark.table(f"{G}.fact_invoice").alias("g"),"invoice_id","inner")
+        .filter(F.col("g.store_key") == -1))
+    assert_zero(bad_store, "Non-null Silver store_id mapped to store_key=-1")
+    bad_product = (spark.table(f"{S}.invoice_items").filter(F.col("product_id").isNotNull()).alias("s")
+        .join(spark.table(f"{G}.fact_invoice_item").alias("g"),
+              ["invoice_id","line_item"],"inner").filter(F.col("g.product_key") == -1))
+    assert_zero(bad_product, "Non-null Silver product_id mapped to product_key=-1")
 
-    print("\nROW COUNTS BY SOURCE ENTITY")
-    header = (f"{'TABLE':<16} {'RAW':>14} {'BRONZE':>14} {'SILVER VALID':>14} "
-              f"{'SILVER QUAR.':>14} {'GOLD VALID':>14} {'GOLD QUAR.':>14}")
-    print(header)
-    print("-" * len(header))
-    for r in results:
-        print(f"{r['table']:<16} {r['raw']:>14,} {r['bronze']:>14,} "
-              f"{r['silver_valid']:>14,} {r['silver_quarantine']:>14,} "
-              f"{r['gold_valid']:>14,} {r['gold_quarantine']:>14,}")
+    # Verify each non-null natural key has exactly one temporal match for the transaction date.
+    for entity, src_table, natural, fact_table, fact_natural, skey, date_col in [
+        ("customer","invoices","customer_id","fact_invoice","invoice_id","customer_key","invoice_date"),
+        ("store","invoices","store_id","fact_invoice","invoice_id","store_key","invoice_date"),
+    ]:
+        source = spark.table(f"{S}.{src_table}").filter(F.col(natural).isNotNull()).alias("s")
+        dim = spark.table(f"{G}.dim_{entity}").alias("d")
+        matched = source.join(dim,
+            (F.col(f"s.{natural}").cast("string")==F.col(f"d.{natural}").cast("string")) &
+            (F.col(f"s.{date_col}").cast("timestamp")>=F.col("d.effective_from")) &
+            (F.col(f"s.{date_col}").cast("timestamp")<F.col("d.effective_to")),"left") \
+            .groupBy(F.col(f"s.{fact_natural}").alias("business_id")).agg(F.count(F.col(f"d.{skey}")).alias("matches"))
+        assert_zero(matched.filter(F.col("matches") != 1),
+            f"{entity}: non-null natural key must resolve to exactly one SCD2 version")
+    source_items = (spark.table(f"{S}.invoice_items").alias("ii")
+        .join(spark.table(f"{S}.invoices").select("invoice_id","invoice_date").alias("ih"),
+              F.col("ii.invoice_id")==F.col("ih.invoice_id"),"inner"))
+    dim_product = spark.table(f"{G}.dim_product").alias("d")
+    pm = source_items.join(dim_product,
+        (F.col("ii.product_id").cast("string")==F.col("d.product_id").cast("string")) &
+        (F.col("ih.invoice_date").cast("timestamp")>=F.col("d.effective_from")) &
+        (F.col("ih.invoice_date").cast("timestamp")<F.col("d.effective_to")),"left") \
+        .groupBy(F.col("ii.invoice_id").alias("invoice_id"),F.col("ii.line_item").alias("line_item")) \
+        .agg(F.count(F.col("d.product_key")).alias("matches"))
+    assert_zero(pm.filter(F.col("matches") != 1),
+        "Product: each Silver invoice line must resolve to exactly one SCD2 product version")
 
-    checks = []
-    for r in results:
-        checks.extend([
-            (r["table"], "RAW = BRONZE", r["raw"], r["bronze"]),
-            (r["table"], "BRONZE = SILVER + SILVER QUAR.",
-             r["bronze"], r["silver_valid"] + r["silver_quarantine"]),
-            (r["table"], "SILVER VALID = GOLD VALID",
-             r["silver_valid"], r["gold_valid"]),
-            (r["table"], "SILVER QUAR. = GOLD QUAR.",
-             r["silver_quarantine"], r["gold_quarantine"]),
-            (r["table"], "GOLD VALID + GOLD QUAR. = BRONZE",
-             r["gold_valid"] + r["gold_quarantine"], r["bronze"]),
-        ])
+    # Date foreign-key integrity.
+    assert_zero(spark.table(f"{G}.fact_invoice").filter(F.col("date_key").isNull()),
+        "Gold fact_invoice has NULL date_key")
+    assert_zero(spark.table(f"{G}.fact_invoice").alias("f")
+        .join(spark.table(f"{G}.dim_date").select("date_key").alias("d"),"date_key","left_anti"),
+        "Gold fact_invoice contains a date_key missing from dim_date")
 
-    print("\nRECONCILIATION CHECKS")
-    print(f"{'TABLE':<16} {'CHECK':<38} {'LEFT':>14} {'RIGHT':>14} {'RESULT':>9}")
-    print("-" * 100)
-    failures = []
-    for table, label, left, right in checks:
-        passed = left == right
-        print(f"{table:<16} {label:<38} {left:>14,} {right:>14,} "
-              f"{'PASS' if passed else 'FAIL':>9}")
-        if not passed:
-            failures.append((table, label, left, right))
+    # Aggregate grain uniqueness.
+    for table, grain in [
+        ("agg_sales_daily",["date_key","store_key","loyalty_tier","payment_method"]),
+        ("agg_sales_product_daily",["date_key","product_key"]),
+        ("agg_sales_product_store_daily",["date_key","product_key","store_key","loyalty_tier","payment_method"]),
+        ("agg_data_quality_daily",["dq_date_key","source_table","source_file_name","dq_rule_key","severity","dq_status","geography_key"]),
+        ("agg_data_quality_record_daily",["evaluation_date_key","source_table","source_file_name","geography_key"]),
+    ]:
+        df = spark.table(f"{G}.{table}")
+        assert_zero(df.groupBy(*grain).count().filter("count != 1"), f"{table}: duplicate aggregate grain")
+        print(f"PASS: {table} grain uniqueness")
 
-    totals = {key: sum(row[key] for row in results) for key in (
-        "raw", "bronze", "silver_valid", "silver_quarantine", "gold_valid", "gold_quarantine")}
-    print("\nTOTALS ACROSS THE FIVE SOURCE ENTITIES")
-    for label, key in (
-        ("RAW", "raw"), ("BRONZE", "bronze"), ("SILVER VALID", "silver_valid"),
-        ("SILVER QUARANTINE", "silver_quarantine"), ("GOLD VALID", "gold_valid"),
-        ("GOLD QUARANTINE", "gold_quarantine")):
-        print(f"{label:<22} {totals[key]:>18,}")
-    print(f"{'SILVER VALID + QUAR.':<22} "
-          f"{totals['silver_valid'] + totals['silver_quarantine']:>18,}")
-    print(f"{'GOLD VALID + QUAR.':<22} "
-          f"{totals['gold_valid'] + totals['gold_quarantine']:>18,}")
-
-    # Aggregate validation is independent of the source-layer row-count checks.
-    aggregate_results = reconcile_sales_aggregates(spark) + reconcile_dq_aggregates(spark)
-    aggregate_failures = sum(mismatch + duplicates for mismatch, duplicates in aggregate_results)
-
-    print("\nFINAL RESULT")
-    if failures or aggregate_failures:
-        print(f"FAIL — {len(failures)} source-layer count check(s) and "
-              f"{aggregate_failures:,} aggregate validation issue(s) detected.")
-        print("This script is read-only. Review the differences before changing any data.")
-        sys.exit(1)
-    print("PASS — source-layer counts and all five Gold aggregate tables reconcile.")
-
+    # Revenue/units/margin aggregate reconciliation against Gold line facts.
+    # Recompute with the same approved formula: quantity * unit_price - discount;
+    # discount NULL is treated as zero.
+    inv = spark.table(f"{G}.fact_invoice").select("invoice_key","date_key","store_key","customer_key","payment_method")
+    cust = spark.table(f"{G}.dim_customer").select("customer_key","loyalty_tier")
+    item = spark.table(f"{G}.fact_invoice_item").alias("ii")
+    prod = spark.table(f"{G}.dim_product").select("product_key","cost")
+    lines = (item.join(inv,"invoice_key","inner").join(cust,"customer_key","left").join(prod,"product_key","left")
+        .withColumn("loyalty_tier",F.coalesce(F.col("loyalty_tier"),F.lit("Unknown")))
+        .withColumn("revenue",F.col("quantity")*F.col("unit_price")-F.coalesce(F.col("discount"),F.lit(0)))
+        .withColumn("margin",F.col("revenue")-F.col("quantity")*F.coalesce(F.col("cost"),F.lit(0))))
+    expected_daily = lines.groupBy("date_key","store_key","loyalty_tier","payment_method").agg(
+        F.sum("revenue").cast("decimal(20,2)").alias("expected_revenue"),
+        F.sum("quantity").cast("long").alias("expected_units_sold"),
+        F.sum("margin").cast("decimal(20,2)").alias("expected_gross_margin"))
+    actual_daily = spark.table(f"{G}.agg_sales_daily").select("date_key","store_key","loyalty_tier","payment_method",
+        F.col("revenue").alias("actual_revenue"),F.col("units_sold").alias("actual_units_sold"),
+        F.col("gross_margin").alias("actual_gross_margin"))
+    daily_compare = expected_daily.join(actual_daily,
+        ["date_key","store_key","loyalty_tier","payment_method"],"full")
+    assert_zero(daily_compare.filter(
+        ~F.col("expected_revenue").eqNullSafe(F.col("actual_revenue")) |
+        ~F.col("expected_units_sold").eqNullSafe(F.col("actual_units_sold")) |
+        ~F.col("expected_gross_margin").eqNullSafe(F.col("actual_gross_margin"))),
+        "agg_sales_daily measure mismatch")
+    expected_product = lines.groupBy("date_key","product_key").agg(
+        F.sum("quantity").cast("long").alias("expected_units_sold"),
+        F.sum("revenue").cast("decimal(20,2)").alias("expected_revenue"),
+        F.sum("margin").cast("decimal(20,2)").alias("expected_gross_margin"))
+    actual_product = spark.table(f"{G}.agg_sales_product_daily").select("date_key","product_key",
+        F.col("units_sold").alias("actual_units_sold"),F.col("revenue").alias("actual_revenue"),
+        F.col("gross_margin").alias("actual_gross_margin"))
+    product_compare = expected_product.join(actual_product,["date_key","product_key"],"full")
+    assert_zero(product_compare.filter(
+        ~F.col("expected_units_sold").eqNullSafe(F.col("actual_units_sold")) |
+        ~F.col("expected_revenue").eqNullSafe(F.col("actual_revenue")) |
+        ~F.col("expected_gross_margin").eqNullSafe(F.col("actual_gross_margin"))),
+        "agg_sales_product_daily measure mismatch")
+    expected_ps = lines.groupBy("date_key","product_key","store_key","loyalty_tier","payment_method").agg(
+        F.sum("quantity").cast("long").alias("expected_units_sold"),
+        F.sum("revenue").cast("decimal(20,2)").alias("expected_revenue"),
+        F.sum("margin").cast("decimal(20,2)").alias("expected_gross_margin"))
+    actual_ps = spark.table(f"{G}.agg_sales_product_store_daily").select(
+        "date_key","product_key","store_key","loyalty_tier","payment_method",
+        F.col("units_sold").alias("actual_units_sold"),F.col("revenue").alias("actual_revenue"),
+        F.col("gross_margin").alias("actual_gross_margin"))
+    ps_compare = expected_ps.join(actual_ps,
+        ["date_key","product_key","store_key","loyalty_tier","payment_method"],"full")
+    assert_zero(ps_compare.filter(
+        ~F.col("expected_units_sold").eqNullSafe(F.col("actual_units_sold")) |
+        ~F.col("expected_revenue").eqNullSafe(F.col("actual_revenue")) |
+        ~F.col("expected_gross_margin").eqNullSafe(F.col("actual_gross_margin"))),
+        "agg_sales_product_store_daily measure mismatch")
+    print("PASS: base key integrity, temporal resolution, row counts, all sales aggregate measures and aggregate grains")
 
 if __name__ == "__main__":
     main()
