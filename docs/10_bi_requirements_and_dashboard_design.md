@@ -1,739 +1,180 @@
-# BI Requirements and Dashboard Design
+# 10 — BI Requirements and Dashboard Design
 
-## 1. Purpose
+## 1. Purpose and scope
 
-This document defines the Business Intelligence requirements and dashboard design for the US Retail End-to-End Data Engineering Platform.
+This document defines the four Power BI dashboards for the US Retail platform. The three commercial dashboards follow the supplied November 2026 mockups. The Data Quality dashboard specification in Sections 18–24 is retained without redesign.
 
-The purpose of this stage is to define:
+The implementation boundary is explicit:
+- RAW, BRONZE and SILVER are unchanged.
+- Gold dimensions and atomic facts are unchanged and remain authoritative.
+- The three commercial dashboards consume exactly one dedicated Gold aggregate each, plus the existing Gold dimensions.
+- The Data Quality dashboard retains its two existing aggregate tables and its record-level issue/quarantine sources.
+- Routine commercial dashboard interactions must not scan `fact_invoice` or `fact_invoice_item`.
 
-- the business questions that the BI layer must answer
-- the dashboards required
-- the KPIs and measures
-- the dimensions and filters
-- the required analytical granularity
-- the visualizations
-- the drill-down paths
-- the treatment of time
-- the distinction between analytical dashboards and operational data-quality remediation
-- the requirements that will drive the design of Gold aggregate tables
+## 2. Shared BI principles
 
-This document is part of **M8 — Gold**.
+1. Commercial dashboards are summarized, decision-oriented reports, not invoice-detail grids.
+2. Each dashboard has one primary aggregate table. Do not combine commercial aggregate tables to serve one report.
+3. All ratios are calculated from additive components; never average precomputed percentages or averages.
+4. Existing Gold dimensions supply labels, hierarchies and descriptive attributes. Do not duplicate geography or product descriptions in aggregates.
+5. Date filtering is mandatory. The Executive and Store dashboards are daily-grain; the Product dashboard is monthly-grain.
+6. A Power BI aggregate's existence does not guarantee its use. Relationships, measures and storage/aggregation mappings must be validated with Performance Analyzer and Databricks query history.
+7. The Gold fact tables remain the reconciliation source, not the normal dashboard source.
 
-It is intentionally defined before the Gold aggregation layer is implemented.
+## 3. Shared dimensions and filters
 
-The aggregation design must be derived from actual BI requirements rather than creating aggregate tables arbitrarily.
+Use the existing dimensions and relationships from `09_gold_model_design.md`:
+- `dim_date`
+- `dim_store` and its existing relationship to `dim_geography`
+- `dim_product`, `dim_subcategory`, `dim_category`
+- `dim_customer` where required by the dashboard
 
----
-
-# 2. BI Design Principles
-
-The Power BI layer is intended to provide business-oriented analytical information.
-
-It is not intended to reproduce the operational source system.
-
-## 2.1 Decision-oriented analytics
-
-The first three dashboards must help users answer business questions such as:
-
-- What happened?
-- How is the business performing?
-- Where is performance coming from?
-- Which products or categories are driving results?
-- How is performance changing over time?
-- Which areas require attention?
-
-They should not require users to inspect millions of individual transactions.
+Do not create a direct Geography-to-sales-fact relationship and do not duplicate City, State, ZIP or Region in aggregate tables.
 
 ---
 
-## 2.2 No operational invoice grids in business dashboards
+# 4. Dashboard 1 — Executive Performance
 
-The following dashboards must not be designed as invoice-detail reports:
+## 4.1 Purpose
 
-- Executive Dashboard
-- Store / Regional Dashboard
-- Product Dashboard
+Provide a concise, high-level view of overall business performance. The reviewed Executive mockup attached on 5 November 2026 is the authoritative visual reference and supersedes all previous Executive mockups.
 
-These dashboards should focus on:
+## 4.2 Headline KPIs
 
-- KPIs
-- trends
-- comparisons
-- rankings
-- distributions
-- aggregated information
-- drill-down analysis
+1. **Total Revenue** — sum of net invoice-line revenue.
+2. **Units Sold** — sum of line quantity.
+3. **Gross Margin %** — total gross margin divided by total revenue.
+4. **Revenue Growth** — selected-period revenue compared with the immediately preceding equivalent-length period.
 
-A detailed invoice investigation is an operational use case and should not dominate the analytical dashboards.
+All four KPIs are supported by the approved Executive aggregate grain. Ratios and growth are calculated from additive revenue, units and gross-margin measures; do not average row-level ratios.
 
-If individual transaction investigation is required in the future, it should be implemented as a dedicated drill-through or detail page rather than as the main dashboard experience.
+## 4.3 Filters
 
----
+- Mandatory: date range.
+- Geography: Region and State.
+- Store.
+- Product: Category and Subcategory.
 
-## 2.3 Data Quality is different
+Filters must propagate through the existing Gold dimensions and the Executive aggregate. Customer Segment / Loyalty Tier is not an Executive filter because it is not retained in this aggregate. Do not introduce invoice-level filters or payment method.
 
-The Data Quality Dashboard is intentionally different.
+## 4.4 Visuals
 
-Its purpose is not only to measure data quality.
+1. **Revenue Trend** — daily revenue for the selected period, compared with the immediately preceding equivalent-length period.
+2. **Revenue by Product Category** — revenue by category, shown as a horizontal bar chart.
+3. **Revenue by Region** — geographic revenue map, using the existing Store-to-Geography relationship.
+4. **Top 10 Stores by Revenue** — ranked horizontal bar chart.
 
-It must also support remediation.
+The Top 10 Stores visual is explicitly included in the reviewed mockup. Do not replace it with Top 10 Products, a product scatter plot or Top 10 Subcategories.
 
-Therefore, the Data Quality Dashboard may contain a detailed grid showing the individual records that require correction.
+## 4.5 Grain and serving table
 
-The grid must provide enough information for the user to identify the corresponding record in the source system without performing additional investigation.
+Primary table: `workspace.gold.agg_executive_performance_daily`.
 
-For example, an invoice-quality problem should expose the invoice number.
+**Exact approved grain:** `date_key × store_key × subcategory_key`.
 
----
+This grain is mandatory. Loyalty Tier is deliberately excluded; do not add Product Key or customer-segment attributes. Category is reached through the existing product hierarchy (`dim_subcategory → dim_category`). Store geography is reached through `dim_store → dim_geography`.
 
-# 3. Standard Dashboard Structure
+## 4.6 Measure behavior
 
-The first three dashboards should follow a common visual and analytical standard.
+- Revenue, Units Sold and Gross Margin are additive at the approved grain.
+- Gross Margin % = `SUM(gross_margin) / SUM(revenue)`.
+- Revenue Growth compares the selected period with the immediately preceding equivalent-length period, using additive revenue.
+- Revenue by Category groups the aggregate through `dim_subcategory → dim_category`.
+- Top 10 Stores groups the aggregate by `store_key`.
+- No invoice count or average invoice value is required or permitted as an Executive KPI in this design.
+- The aggregate does not retain product-level identity. Do not attempt product-level visuals from it.
 
-Each should contain:
-
-1. **3–4 headline KPIs**
-2. **Mandatory time filtering**
-3. **Relevant dimensional filters**
-4. **Summarized information**
-5. **Time-series analysis**
-6. **Trend comparisons**
-7. **Top 10 / Bottom 10 analysis**
-8. **Appropriate drill-downs**
-9. **No operational transaction grid**
-
-The Data Quality Dashboard may deviate from this standard where required for remediation.
-
----
-
-# 4. Common Time Requirements
-
-Time is a mandatory analytical dimension for summarized business information.
-
-Users must be able to filter by:
-
-- Year
-- Month
-- Date range
-
-Where appropriate, analytical visuals should support:
-
-```text
-Year
-  ↓
-Quarter
-  ↓
-Month
-  ↓
-Day
-```
-
-Time-series visuals should support comparison against an appropriate previous period.
-
-Examples:
-
-- current month vs previous month
-- current quarter vs previous quarter
-- current year vs previous year
-- selected period vs previous comparable period
-
-The exact comparison logic will be implemented in the Power BI semantic model.
-
----
-
-# 5. Dashboard 1 — Executive Dashboard
+# 5. Dashboard 2 — Store & Regional Performance
 
 ## 5.1 Purpose
 
-The Executive Dashboard provides a concise overview of overall business performance.
-
-The dashboard should allow a management user to understand the current state of the business within seconds.
-
-The dashboard should answer:
-
-> How is the business performing?
-
-> Is revenue growing or declining?
-
-> Is performance driven by transaction volume or transaction value?
-
-> Which cities and product categories are contributing most to revenue?
-
----
+Analyze geographic performance and compare individual stores. The supplied mockup is the visual reference.
 
 ## 5.2 Headline KPIs
 
-The dashboard should contain four headline KPIs.
+1. **Total Revenue** — selected period and geography.
+2. **Active Stores** — count of active/current stores in the selected geographic scope, sourced from `dim_store` (not inferred from stores with sales in a particular day).
+3. **Revenue per Store** — Total Revenue / Active Stores.
+4. **Revenue Growth** — selected period compared with the previous comparable period.
 
-### KPI 1 — Total Revenue
+## 5.3 Filters
 
-Definition:
+- Mandatory: date range, with Year/Month hierarchy.
+- Region, State, City and Store.
 
-```text
-Total Revenue =
-SUM(invoice line revenue)
-```
+## 5.4 Visuals
 
-Where:
+1. Revenue by State map, with geographic drill-down where supported by the existing dimensions.
+2. Monthly Revenue by Region line chart.
+3. Top 10 Stores by Revenue.
+4. Bottom 10 Stores by Revenue.
 
-```text
-line revenue =
-quantity × unit_price
-- COALESCE(discount, 0)
-```
+## 5.5 Grain and serving table
 
----
+Primary table: `workspace.gold.agg_store_performance_daily`.
 
-### KPI 2 — Total Invoices
+**Grain:** `date_key × store_key`.
 
-Number of valid invoices in the selected period.
+The store dimension supplies City, State and Region. Geography remains reached through the existing `dim_store → dim_geography` relationship.
 
----
+## 5.6 Measure behavior
 
-### KPI 3 — Average Invoice Value
-
-```text
-Average Invoice Value =
-Total Revenue / Total Invoices
-```
-
-This provides context for revenue growth.
+- Revenue, Units Sold and Gross Margin are additive.
+- `invoice_count` is calculated from distinct invoice headers at Date × Store, not from invoice-item rows.
+- Revenue per Store uses the selected-scope active-store count. A store with no sales in a selected date window must not silently disappear from the denominator if it remains an active store.
+- Revenue growth is calculated from additive revenue for comparable periods.
 
 ---
 
-### KPI 4 — Revenue Growth %
+# 6. Dashboard 3 — Product Performance
 
-Revenue change compared with the previous comparable period.
+## 6.1 Purpose
 
-```text
-Revenue Growth % =
-(Current Revenue - Previous Revenue)
-/
-Previous Revenue
-```
+Analyze product, category and subcategory revenue and profitability. The supplied mockup is the visual reference.
 
----
+## 6.2 Headline KPIs
 
-## 5.3 Mandatory Filters
+1. **Product Revenue** — sum of net invoice-line revenue.
+2. **Units Sold**.
+3. **Average Selling Price** = Total Revenue / Total Units Sold.
+4. **Gross Margin %** = Total Gross Margin / Total Revenue.
 
-### Time
+## 6.3 Filters
 
-- Year
-- Month
-- Date range
+- Mandatory: date range, Year and Month. The report's trend is monthly.
+- Region, State and Store.
+- Category, Subcategory and Product.
 
-### Optional dimensions
+## 6.4 Visuals
 
-- Region
-- State
-- Store
-- Product Category
-- Customer Loyalty Tier
-- Payment Method
+1. Revenue Trend by Product Category (monthly lines).
+2. Revenue by Region and Category (map/region comparison, as represented in the mockup).
+3. Top 10 Products by Revenue.
+4. Revenue vs. Gross Margin scatter; bubble size represents Units Sold.
+5. Top 10 Subcategories by Revenue.
+6. Top 5 Products by Store comparison (heatmap/table).
+7. Product Revenue by Store for the selected product (bar chart).
 
-The dashboard should avoid excessive filters.
+## 6.5 Grain and serving table
 
-Only dimensions that support meaningful executive analysis should be exposed prominently.
+Primary table: `workspace.gold.agg_product_performance_monthly`.
 
----
+**Exact approved grain:** `month_date_key × store_key × product_key`.
 
-# 6. Executive Dashboard — Visualizations
+`month_date_key` is the first calendar day of the month encoded as YYYYMMDD (for example, 20260101), and is a valid FK to `dim_date.date_key`. Do not use `ROUND(date_key / 100)`: rounding is not a safe month derivation. The ETL must derive the month start with calendar date functions.
 
-## 6.1 Revenue Trend
+Category and Subcategory are resolved through `dim_product`; Region, State and City are resolved through `dim_store → dim_geography`.
 
-Primary time-series visualization.
+## 6.6 Measure behavior
 
-Displays:
-
-- revenue over time
-- selected time granularity
-- previous-period comparison where appropriate
-
-Recommended visual:
-
-**Line chart**
-
-Possible hierarchy:
-
-```text
-Year
- ↓
-Quarter
- ↓
-Month
- ↓
-Day
-```
-
----
-
-## 6.2 Revenue vs Invoice Volume
-
-Visualization comparing:
-
-- total revenue
-- number of invoices
-
-The objective is to determine whether revenue changes are associated primarily with:
-
-- transaction volume
-- transaction value
-
-This visualization may use a combination chart or two synchronized trend lines.
-
----
-
-## 6.3 Top 10 Cities by Revenue
-
-Horizontal bar chart.
-
-Purpose:
-
-> Which cities generate the largest amount of revenue?
-
-The visualization should support filtering by the selected time period.
-
----
-
-## 6.4 Revenue by Product Category
-
-Horizontal bar chart.
-
-Purpose:
-
-> Which product categories contribute most to revenue?
-
-The visualization should support drill-down:
-
-```text
-Category
-   ↓
-Subcategory
-```
-
----
-
-## 6.5 Optional Executive Visualization
-
-Where sufficient dashboard space exists, an additional visual may show:
-
-**Revenue by Region**
-
-This provides a high-level geographical comparison without turning the Executive Dashboard into a geographic dashboard.
-
----
-
-# 7. Executive Dashboard — Drill-Down
-
-Primary analytical hierarchies:
-
-### Time
-
-```text
-Year
- ↓
-Quarter
- ↓
-Month
- ↓
-Day
-```
-
-### Product
-
-```text
-Category
- ↓
-Subcategory
- ↓
-Product
-```
-
-### Geography
-
-```text
-Region
- ↓
-State
- ↓
-City
-```
-
-The Executive Dashboard should remain high-level even when drill-down is available.
-
----
-
-# 8. Dashboard 2 — Store / Regional Performance
-
-## 8.1 Purpose
-
-The Store / Regional Dashboard analyzes performance geographically and by physical store.
-
-It should answer:
-
-> Which regions are performing best?
-
-> Which states and cities are driving revenue?
-
-> Which stores are outperforming or underperforming?
-
-> How is regional performance changing over time?
-
----
-
-# 9. Store / Regional KPIs
-
-The dashboard should contain four headline KPIs.
-
-### KPI 1 — Total Revenue
-
-Revenue for the selected geographic scope and time period.
-
----
-
-### KPI 2 — Revenue Growth %
-
-Change compared with the previous comparable period.
-
----
-
-### KPI 3 — Average Invoice Value
-
-Average revenue per invoice.
-
----
-
-### KPI 4 — Revenue per Store
-
-```text
-Revenue per Store =
-Total Revenue / Number of Active Stores
-```
-
-This provides a normalized measure of store performance.
-
----
-
-# 10. Store / Regional Filters
-
-### Mandatory
-
-- Year
-- Month
-- Date range
-
-### Geographic
-
-- Region
-- State
-- City
-- Store
-
-### Optional
-
-- Customer Loyalty Tier
-- Payment Method
-
----
-
-# 11. Store / Regional Visualizations
-
-## 11.1 Geographic Map
-
-A geographic map is mandatory for this dashboard.
-
-The primary map should display:
-
-**Revenue by State**
-
-The geographical hierarchy should support:
-
-```text
-Region
- ↓
-State
- ↓
-City
- ↓
-Store
-```
-
-The map should allow users to identify geographical concentration of revenue.
-
----
-
-## 11.2 Regional Revenue Trend
-
-Line chart showing revenue over time by region.
-
-Users should be able to compare multiple regions.
-
-Example:
-
-```text
-Region A ─────────────╮
-                      ╰────
-Region B ───────╮
-                ╰──────────
-Region C ───────────╮
-                    ╰─────
-```
-
----
-
-## 11.3 Top 10 Stores by Revenue
-
-Horizontal bar chart.
-
-Purpose:
-
-> Which stores generate the highest revenue?
-
----
-
-## 11.4 Bottom 10 Stores by Revenue
-
-Horizontal bar chart.
-
-Purpose:
-
-> Which stores require management attention?
-
-Displaying only the Top 10 would hide potentially important underperformers.
-
-The dashboard should allow switching between:
-
-- Top 10
-- Bottom 10
-
-or display both when space allows.
-
----
-
-## 11.5 Revenue vs Invoice Volume
-
-A scatter plot can be used to compare stores or regions.
-
-Axes:
-
-```text
-X = Number of Invoices
-Y = Revenue
-```
-
-Optional bubble size:
-
-```text
-Store Count
-```
-
-This identifies:
-
-- high-volume / high-revenue areas
-- high-volume / low-revenue areas
-- low-volume / high-value areas
-- low-volume / low-revenue areas
-
----
-
-# 12. Store / Regional Drill-Down
-
-Primary hierarchy:
-
-```text
-Region
- ↓
-State
- ↓
-City
- ↓
-Store
-```
-
-This allows users to start at a regional level and progressively identify the source of performance differences.
-
----
-
-# 13. Dashboard 3 — Product Performance
-
-## 13.1 Purpose
-
-The Product Dashboard analyzes product sales, product hierarchy and profitability.
-
-It should answer:
-
-> Which products generate the most revenue?
-
-> Which categories and subcategories are driving the business?
-
-> Which products generate the best margins?
-
-> Are high-revenue products also high-margin products?
-
----
-
-# 14. Product KPIs
-
-Four headline KPIs are recommended.
-
-### KPI 1 — Product Revenue
-
-Revenue generated by products during the selected period.
-
----
-
-### KPI 2 — Units Sold
-
-Total quantity sold.
-
----
-
-### KPI 3 — Average Selling Price
-
-```text
-Average Selling Price =
-Total Revenue / Total Units Sold
-```
-
----
-
-### KPI 4 — Gross Margin %
-
-```text
-Gross Margin =
-Revenue - Product Cost
-```
-
-```text
-Gross Margin % =
-Gross Margin / Revenue
-```
-
-Product cost is derived from the product cost attribute and quantity sold.
-
----
-
-# 15. Product Filters
-
-### Mandatory
-
-- Year
-- Month
-- Date range
-
-### Product hierarchy
-
-- Category
-- Subcategory
-- Product
-- Brand
-
-### Additional
-
-- Region
-- State
-- Store
-- Customer Loyalty Tier
-
----
-
-# 16. Product Visualizations
-
-## 16.1 Product Revenue Trend
-
-Line chart showing product revenue over time.
-
-Users should be able to filter by:
-
-- Category
-- Subcategory
-- Brand
-- Product
-
----
-
-## 16.2 Top 10 Categories by Revenue
-
-Horizontal bar chart.
-
-Hierarchy:
-
-```text
-Category
- ↓
-Subcategory
-```
-
----
-
-## 16.3 Top 10 Products by Revenue
-
-Horizontal bar chart.
-
-Purpose:
-
-> Which individual products generate the most revenue?
-
----
-
-## 16.4 Top / Bottom Products by Margin
-
-The dashboard should allow users to identify products with strong or weak profitability.
-
-Possible views:
-
-- Top 10 products by Gross Margin %
-- Bottom 10 products by Gross Margin %
-
----
-
-## 16.5 Revenue vs Gross Margin
-
-Recommended scatter plot.
-
-Axes:
-
-```text
-X = Revenue
-Y = Gross Margin %
-```
-
-This identifies four analytical groups:
-
-```text
-High Revenue / High Margin
-        → Strong performers
-
-High Revenue / Low Margin
-        → Important products requiring investigation
-
-Low Revenue / High Margin
-        → Potential growth opportunities
-
-Low Revenue / Low Margin
-        → Potential rationalization candidates
-```
-
----
-
-# 17. Product Drill-Down
-
-Primary hierarchy:
-
-```text
-Category
- ↓
-Subcategory
- ↓
-Product
-```
-
-The dashboard should support progressive analysis without displaying invoice-level detail.
+- Revenue, Units Sold and Gross Margin are additive.
+- Average Selling Price and Gross Margin % are ratios of summed components.
+- Product ranking and store comparisons are based on the selected monthly date window.
+- The table intentionally does not contain Loyalty Tier because it is not a filter in the supplied Product mockup. Do not introduce a loyalty segmentation requirement without revisiting this grain.
 
 ---
 
 # 18. Dashboard 4 — Data Quality
-
 ## 18.1 Purpose
 
 The Data Quality Dashboard is an operational analytical dashboard.
@@ -1011,49 +452,49 @@ Grid shows invoice-related DQ issues
 ```
 
 This makes the dashboard an operational remediation tool rather than merely a reporting screen.
-
 ---
 
 # 25. Dashboard Comparison
 
 | Requirement | Executive | Store / Regional | Product | Data Quality |
 |---|---:|---:|---:|---:|
-| 3–4 KPIs | ✅ | ✅ | ✅ | ✅ |
-| Mandatory time filter | ✅ | ✅ | ✅ | ✅ |
-| Trend analysis | ✅ | ✅ | ✅ | ✅ |
-| Top 10 analysis | ✅ | ✅ | ✅ | Optional |
-| Bottom 10 analysis | Optional | ✅ | ✅ | Optional |
-| Geographic map | Optional | ✅ | ❌ | Optional |
-| Drill-down | ✅ | ✅ | ✅ | ✅ |
-| Detailed grid | ❌ | ❌ | ❌ | ✅ |
-| Individual source record | ❌ | ❌ | ❌ | ✅ |
-| Remediation workflow | ❌ | ❌ | ❌ | ✅ |
+| 3–4 KPIs | Yes | Yes | Yes | Yes |
+| Mandatory time filter | Yes | Yes | Yes | Yes |
+| Trend analysis | Yes | Yes | Yes | Yes |
+| Top 10 analysis | Yes | Yes | Yes | Optional |
+| Bottom 10 analysis | Optional | Yes | Optional | Optional |
+| Geographic map | Optional | Yes | Yes | Optional |
+| Drill-down | Yes | Yes | Yes | Yes |
+| Detailed grid | No | No | No | Yes |
+| Individual source record | No | No | No | Yes |
+| Remediation workflow | No | No | No | Yes |
 
 ---
-
 # 26. Common Analytical Hierarchies
 
 ## Time
 
 ```text
 Year
- ↓
+  ↓
 Quarter
- ↓
+  ↓
 Month
- ↓
+  ↓
 Day
 ```
+
+The Product dashboard is served at month-start grain; the Executive and Store dashboards are served at daily grain.
 
 ## Geography
 
 ```text
 Region
- ↓
+  ↓
 State
- ↓
+  ↓
 City
- ↓
+  ↓
 Store
 ```
 
@@ -1061,9 +502,9 @@ Store
 
 ```text
 Category
- ↓
+  ↓
 Subcategory
- ↓
+  ↓
 Product
 ```
 
@@ -1071,79 +512,37 @@ Product
 
 ```text
 Source Table
- ↓
+  ↓
 DQ Rule
- ↓
+  ↓
 Source Record
 ```
 
 ---
-
 # 27. Gold Base Tables Required
 
-The dashboards will consume the Gold dimensional model defined in:
+Commercial dashboards use the existing Gold dimensional model and the dedicated aggregate tables defined in `11_gold_aggregation_design.md`. The existing atomic facts `fact_invoice` and `fact_invoice_item` remain the reconciliation foundation and are not the routine commercial dashboard source.
 
-`09_gold_model_design.md`
-
-The principal business tables are:
-
-```text
-dim_date
-dim_geography
-dim_customer
-dim_store
-dim_category
-dim_subcategory
-dim_product
-
-fact_invoice
-fact_invoice_item
-```
-
-The Data Quality Dashboard additionally uses:
-
-```text
-dim_data_quality_rule
-fact_data_quality_issue
-```
-
-and the quarantine datasets where detailed remediation attributes are required.
+The Data Quality dashboard additionally uses `dim_data_quality_rule`, `fact_data_quality_issue`, both DQ aggregates, and relevant quarantine datasets for remediation details.
 
 ---
+# 28. Measure Definitions and Data Integrity
 
-# 28. Measures and Derived Metrics
-
-The following analytical measures are required or expected.
-
-## Sales
+### Commercial measures
 
 ```text
-Total Revenue
-Total Invoices
-Average Invoice Value
-Revenue Growth %
+Net line revenue = quantity * unit_price - COALESCE(discount, 0)
+Gross margin = net line revenue - (quantity * product cost)
+Average selling price = SUM(revenue) / SUM(units_sold)
+Gross margin % = SUM(gross_margin) / SUM(revenue)
+Revenue growth % = (current comparable-period revenue - prior-period revenue) / prior-period revenue
 ```
 
-## Store / Regional
+Use explicit handling for zero denominators and missing comparison periods. Do not average row-level ratios.
 
-```text
-Revenue
-Revenue Growth %
-Average Invoice Value
-Revenue per Store
-```
+A NULL `customer_id` is a valid anonymous/no-customer condition and maps to the generic Gold customer member (`customer_key = -1`, displayed as “No customer assigned”). It must remain distinguishable from an invalid customer reference quarantined by Silver.
 
-## Product
-
-```text
-Product Revenue
-Units Sold
-Average Selling Price
-Gross Margin
-Gross Margin %
-```
-
-## Data Quality
+### Data Quality measures
 
 ```text
 Total Records
@@ -1155,216 +554,68 @@ Total DQ Issues
 Affected Records
 ```
 
-The final Power BI measure definitions must be reconciled against Gold calculations.
+The Data Quality definitions and remediation behavior above remain separate from commercial KPI logic.
 
 ---
-
 # 29. Aggregation Requirements
 
-The dashboard requirements defined here will drive the next design step:
+The requirements defined here drive `11_gold_aggregation_design.md`. For each dashboard, the aggregation design specifies its single commercial aggregate, grain, dimensions, additive measures, refresh strategy, cardinality profile and reconciliation method. The Data Quality dashboard retains its two existing DQ aggregates.
 
-`11_gold_aggregations_design.md`
-
-Aggregate tables must not be created simply because aggregation is technically possible.
-
-For each dashboard requirement, the next stage must determine:
-
-1. Can the Gold base model answer the requirement efficiently?
-2. If not, what aggregate is required?
-3. What is the required grain?
-4. Which dimensions are required?
-5. Which measures are required?
-6. What is the refresh strategy?
-7. How will the aggregate be reconciled against the base facts?
-
-The base Gold dimensional model remains the authoritative analytical foundation.
+The aggregate inventory must be driven by actual dashboard visuals and filter behavior, not by creating arbitrary combinations. The three commercial dashboards must not combine multiple commercial aggregates.
 
 ---
-
 # 30. Performance Principle
 
-The objective is not to create the largest possible number of aggregate tables.
+The objective is not to create the largest possible number of aggregate tables. The objective is to create only the aggregates that materially improve Power BI performance, repeated analytical workloads, high-volume fact analysis, common visuals and predictable refresh behavior.
 
-The objective is to create only the aggregates that provide meaningful benefits for:
-
-- Power BI query performance
-- repeated analytical workloads
-- high-volume fact analysis
-- common dashboard visualizations
-- predictable refresh behavior
-
-The project should prefer the Gold base model where it provides adequate performance and flexibility.
+The three commercial aggregates must serve their respective mockups without routine scans of `fact_invoice` or `fact_invoice_item`. Validate actual row counts and query plans; aggregation tables do not automatically guarantee that Power BI uses them.
 
 ---
-
 # 31. BI Data Integrity
 
-Power BI must not silently correct or reinterpret data.
+Power BI must not silently correct or reinterpret data. Business rules belong in Silver and Gold conformance, not in report-specific workarounds.
 
-Business rules belong in:
-
-```text
-Silver
-    ↓
-Data Quality / Conformance
-    ↓
-Gold
-```
-
-Power BI should consume the resulting trusted analytical model.
-
-For example:
-
-```text
-NULL customer_id
-```
-
-represents an anonymous transaction and must remain analytically distinguishable from:
-
-```text
-Invalid customer reference
-```
-
-The first is a valid business condition.
-
-The second is a data-quality problem.
+A NULL `customer_id` represents an anonymous transaction and maps to the generic Gold member `customer_key = -1`, displayed as “No customer assigned”. It must remain analytically distinguishable from an invalid customer reference, which is a data-quality problem.
 
 ---
+# 32. Final dashboard-to-aggregate architecture
 
-# 32. Final Dashboard Architecture
+| Dashboard | Single primary aggregate | Grain |
+|---|---|---|
+| Executive Performance | `agg_executive_performance_daily` | Date × Store × Subcategory |
+| Store & Regional Performance | `agg_store_performance_daily` | Date × Store |
+| Product Performance | `agg_product_performance_monthly` | Month × Store × Product |
+| Data Quality | `agg_data_quality_daily` and `agg_data_quality_record_daily` | Existing DQ issue and record snapshot grains |
 
-The final BI layer will contain four primary dashboards:
-
-```text
-                         POWER BI
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                 │
-          ▼                 ▼                 ▼
-     EXECUTIVE       STORE / REGIONAL     PRODUCT
-          │                 │                 │
-          │                 │                 │
-          └─────────────────┼─────────────────┘
-                            │
-                            ▼
-                     DATA QUALITY
-                            │
-                            ▼
-                  Remediation Detail
-```
-
-The first three dashboards are analytical and summarized.
-
-The Data Quality Dashboard is analytical plus operational/remediation-oriented.
+The first three dashboards must use their one assigned aggregate plus dimensions. The DQ remediation grid remains record-level and is intentionally not forced into an aggregate.
 
 ---
-
 # 33. Dashboard Design Summary
 
-## Executive
+## Executive Performance
 
-**Question:**
+Focus: Total Revenue, Units Sold, Gross Margin %, Revenue Growth, daily revenue trend, revenue by product category, revenue by region and Top 10 Stores by Revenue. No detailed transaction grid.
 
-> How is the business performing?
+## Store & Regional Performance
 
-Focus:
+Focus: revenue, active stores, revenue per store, growth, state map, regional trends and Top/Bottom 10 stores. No detailed transaction grid.
 
-- revenue
-- transaction volume
-- average invoice value
-- growth
-- time trends
-- top cities
-- category performance
+## Product Performance
 
-No detailed transaction grid.
-
----
-
-## Store / Regional
-
-**Question:**
-
-> Where is the business performing well or poorly?
-
-Focus:
-
-- geographic performance
-- regional trends
-- state/city performance
-- store rankings
-- top/bottom stores
-- revenue vs transaction volume
-
-Includes a geographic map.
-
-No detailed transaction grid.
-
----
-
-## Product
-
-**Question:**
-
-> Which products and categories drive revenue and profitability?
-
-Focus:
-
-- revenue
-- units
-- selling price
-- margin
-- category hierarchy
-- top/bottom products
-- revenue vs margin
-
-No detailed transaction grid.
-
----
+Focus: product revenue, units sold, average selling price, gross margin, monthly category trends, region/category analysis, Top 10 products, Top 10 subcategories, store comparisons and selected-product store performance. No detailed transaction grid.
 
 ## Data Quality
 
-**Question:**
-
-> What is wrong with the data, how significant is it, and exactly which records must be corrected?
-
-Focus:
-
-- data-quality percentage
-- incorrect-record percentage
-- DQ issues
-- affected records
-- error types
-- severity
-- trends
-- source tables
-- remediation grid
-
-Detailed records are intentionally permitted.
+Focus and remediation requirements remain as defined in Sections 18–24: data-quality percentage, incorrect-record percentage, DQ issues, affected records, error types, severity, trends, source tables and remediation grid. Detailed records are intentionally permitted.
 
 ---
+# 34. Power BI Acceptance Criteria
 
-# 34. Next Step
-
-The BI requirements defined in this document are now the input to:
-
-```text
-11_gold_aggregations_design.md
-```
-
-The next stage must translate these dashboard requirements into a precise Gold aggregation strategy.
-
-For every proposed aggregate, the design must specify:
-
-- business purpose
-- source fact(s)
-- grain
-- dimensions
-- measures
-- required time granularity
-- refresh strategy
-- incremental-loading strategy
-- reconciliation method
-- Power BI consumer
-
-No aggregate table should be implemented until its analytical purpose has been established.
+1. Every visual and slicer in the three commercial mockups is supported by its assigned aggregate and existing dimensions. The reviewed Executive mockup dated 5 November 2026 is authoritative.
+2. No commercial dashboard visual requires a second commercial aggregate.
+3. Revenue, units and gross margin reconcile to Gold invoice-line facts at matching filter context.
+4. Store invoice counts reconcile to distinct invoice headers.
+5. Active Stores uses the current store dimension population, not merely stores with activity in the selected period.
+6. Monthly product keys are valid first-of-month `dim_date` keys.
+7. Power BI Performance Analyzer and Databricks query history confirm routine commercial interactions do not scan the atomic sales facts.
+8. DQ visuals continue to use the existing DQ aggregates and DQ remediation datasets.
