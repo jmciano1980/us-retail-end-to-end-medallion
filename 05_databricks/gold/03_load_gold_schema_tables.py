@@ -84,6 +84,54 @@ def seed_defaults():
          datetime(1900,1,1), datetime(9998,12,31,0,0,0), True, "DEFAULT", now, now),
         "product_key long, product_id string, sku string, product_name string, subcategory_key long, brand string, unit_price decimal(18,2), cost decimal(18,2), is_active boolean, effective_from timestamp, effective_to timestamp, is_current boolean, attribute_hash string, _insert_datetime_utc timestamp, _update_datetime_utc timestamp")
 
+# Canonical US Census regions. State abbreviations are the authoritative
+# source for region classification for both stores and customers.
+US_STATE_REGIONS = {
+    "CT": "Northeast", "ME": "Northeast", "MA": "Northeast",
+    "NH": "Northeast", "RI": "Northeast", "VT": "Northeast",
+    "NJ": "Northeast", "NY": "Northeast", "PA": "Northeast",
+
+    "IL": "Midwest", "IN": "Midwest", "MI": "Midwest",
+    "OH": "Midwest", "WI": "Midwest", "IA": "Midwest",
+    "KS": "Midwest", "MN": "Midwest", "MO": "Midwest",
+    "NE": "Midwest", "ND": "Midwest", "SD": "Midwest",
+
+    "DE": "South", "FL": "South", "GA": "South",
+    "MD": "South", "NC": "South", "SC": "South",
+    "VA": "South", "WV": "South", "DC": "South",
+    "AL": "South", "KY": "South", "MS": "South",
+    "TN": "South", "AR": "South", "LA": "South",
+    "OK": "South", "TX": "South",
+
+    "AZ": "West", "CO": "West", "ID": "West",
+    "MT": "West", "NV": "West", "NM": "West",
+    "UT": "West", "WY": "West", "AK": "West",
+    "CA": "West", "HI": "West", "OR": "West",
+    "WA": "West",
+
+    # US territories: kept separate from the four Census regions.
+    "PR": "US Territories", "VI": "US Territories",
+    "AS": "US Territories", "GU": "US Territories",
+    "MP": "US Territories",
+
+    # Freely associated Pacific states: kept as a separate reporting group.
+    "FM": "Freely Associated States",
+    "MH": "Freely Associated States",
+    "PW": "Freely Associated States",
+}
+
+def us_region_expr(state_col):
+    """Return a reporting region for US states, territories and Pacific associates."""
+    state = F.col(state_col) if isinstance(state_col, str) else state_col
+    state = F.upper(F.trim(state))
+    mapping = F.create_map(*[
+        item
+        for state_code, region_name in US_STATE_REGIONS.items()
+        for item in (F.lit(state_code), F.lit(region_name))
+    ])
+    return F.element_at(mapping, state)
+
+
 def upsert_simple(src, natural_cols, target, key_col, select_cols):
     src = src.select(*select_cols)
     assert_unique(src, natural_cols, f"{target} source natural key")
@@ -175,22 +223,88 @@ def load_date_dim():
         missing.write.format("delta").mode("append").saveAsTable(f"{G}.dim_date")
 
 def load_geography():
-    stores = spark.table(f"{S}.stores").select("region","state","city","zip_code")
+    # Silver customers do not carry region. Derive it consistently from the
+    # state abbreviation for both customers and stores.
+    stores = spark.table(f"{S}.stores").select(
+        F.col("region").alias("_source_region"), "state", "city", "zip_code")
     customers = spark.table(f"{S}.customers").select(
-        F.lit(None).cast("string").alias("region"), "state","city","zip_code")
-    src = stores.unionByName(customers).dropDuplicates()
-    tgt = spark.table(f"{G}.dim_geography")
-    null_marker = "\u0001NULL\u0001"
-    src_norm = src.select(*[F.coalesce(F.col(c).cast("string"), F.lit(null_marker)).alias(c) for c in src.columns]).dropDuplicates()
-    tgt_norm = tgt.select(*[F.coalesce(F.col(c).cast("string"), F.lit(null_marker)).alias(c) for c in src.columns]).dropDuplicates()
+        F.lit(None).cast("string").alias("_source_region"),
+        "state", "city", "zip_code")
+
+    src = stores.unionByName(customers)
+    src = (src
+        .withColumn(
+            "region",
+            F.coalesce(
+                us_region_expr("state"),
+                F.when(
+                    F.trim(F.col("_source_region")) != "",
+                    F.initcap(F.trim(F.col("_source_region")))
+                )
+            )
+        )
+        .select("region", "state", "city", "zip_code")
+        .dropDuplicates())
+
+    target_name = f"{G}.dim_geography"
+
+    # Fail explicitly for non-null state values that cannot be classified.
+    unmapped = (src
+        .filter(F.col("state").isNotNull() & F.col("region").isNull())
+        .select("state").distinct().limit(20).collect())
+    if unmapped:
+        states = [row["state"] for row in unmapped]
+        raise RuntimeError(
+            f"Cannot derive US Census region for state values: {states}. "
+            "Expected two-letter US state abbreviations; extend US_STATE_REGIONS "
+            "or normalize the Silver state values."
+        )
+
+    # Repair already-loaded rows IN PLACE. geography_key is preserved, so
+    # existing dim_store and dim_customer foreign keys remain valid.
+    existing = spark.table(target_name)
+    updates = (existing
+        .select("geography_key", "state")
+        .withColumn("region", us_region_expr("state"))
+        .filter(F.col("region").isNotNull())
+        .select("geography_key", "region"))
+
+    if updates.limit(1).count():
+        (DeltaTable.forName(spark, target_name).alias("t")
+            .merge(updates.alias("s"), "t.geography_key = s.geography_key")
+            .whenMatchedUpdate(
+                condition="NOT (t.region <=> s.region)",
+                set={
+                    "region": "s.region",
+                    "_update_datetime_utc": "current_timestamp()"
+                })
+            .execute())
+
+    # Insert only new (region, state, city, ZIP) combinations after repair.
+    tgt = spark.table(target_name)
+    null_marker = "\\u0001NULL\\u0001"
+    src_norm = src.select(*[
+        F.coalesce(F.col(c).cast("string"), F.lit(null_marker)).alias(c)
+        for c in src.columns
+    ]).dropDuplicates()
+    tgt_norm = tgt.select(*[
+        F.coalesce(F.col(c).cast("string"), F.lit(null_marker)).alias(c)
+        for c in src.columns
+    ]).dropDuplicates()
     missing = src_norm.join(tgt_norm, src.columns, "left_anti")
-    missing = missing.select(*[F.when(F.col(c)==null_marker, F.lit(None).cast("string")).otherwise(F.col(c)).alias(c) for c in src.columns])
+    missing = missing.select(*[
+        F.when(F.col(c) == null_marker, F.lit(None).cast("string"))
+         .otherwise(F.col(c)).alias(c)
+        for c in src.columns
+    ])
+
     if missing.limit(1).count():
-        new = assign_keys(missing, f"{G}.dim_geography", "geography_key", src.columns)
-        (new.withColumn("_insert_datetime_utc",F.current_timestamp())
-            .withColumn("_update_datetime_utc",F.current_timestamp())
-            .select(*spark.table(f"{G}.dim_geography").columns)
-            .write.format("delta").mode("append").saveAsTable(f"{G}.dim_geography"))
+        new = assign_keys(missing, target_name, "geography_key", src.columns)
+        (new
+            .withColumn("_insert_datetime_utc", F.current_timestamp())
+            .withColumn("_update_datetime_utc", F.current_timestamp())
+            .select(*spark.table(target_name).columns)
+            .write.format("delta").mode("append").saveAsTable(target_name))
 
 def load_dimensions():
     load_geography()
@@ -200,7 +314,13 @@ def load_dimensions():
         .agg(F.min(F.col("invoice_date").cast("timestamp")).alias("_initial_effective_from")))
     store_src = (spark.table(f"{S}.stores").alias("s")
         .join(geo.alias("g"),
-          F.col("s.region").eqNullSafe(F.col("g.region")) &
+          F.coalesce(
+              us_region_expr(F.col("s.state")),
+              F.when(
+                  F.trim(F.col("s.region")) != "",
+                  F.initcap(F.trim(F.col("s.region")))
+              )
+          ).eqNullSafe(F.col("g.region")) &
           F.col("s.state").eqNullSafe(F.col("g.state")) &
           F.col("s.city").eqNullSafe(F.col("g.city")) &
           F.col("s.zip_code").eqNullSafe(F.col("g.zip_code")), "left")
@@ -213,7 +333,7 @@ def load_dimensions():
         .groupBy("customer_id").agg(F.min(F.col("invoice_date").cast("timestamp")).alias("_initial_effective_from")))
     customer_src = (spark.table(f"{S}.customers").alias("c")
         .join(geo.alias("g"),
-          F.lit(None).cast("string").eqNullSafe(F.col("g.region")) &
+          us_region_expr(F.col("c.state")).eqNullSafe(F.col("g.region")) &
           F.col("c.state").eqNullSafe(F.col("g.state")) &
           F.col("c.city").eqNullSafe(F.col("g.city")) &
           F.col("c.zip_code").eqNullSafe(F.col("g.zip_code")), "left")
